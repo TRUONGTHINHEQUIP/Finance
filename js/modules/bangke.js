@@ -3,7 +3,7 @@ import { supabase } from '../core/config.js';
 import { fmtVND, fmtDate, todayStr, addDaysStr } from '../core/utils.js';
 import { computeStatement, saveStatement } from '../core/billing.js';
 
-export async function render(container) {
+export async function render(container, profile, isStale = () => false) {
   container.innerHTML = `
     <div class="page-head">
       <div><h1>Bảng kê</h1><div class="sub">Thuê định kỳ — tính theo ngày ký thật, tồn đầu kỳ + phát sinh thuê</div></div>
@@ -28,6 +28,7 @@ export async function render(container) {
 
   const { data: c } = await supabase.from('categories').select('*');
   const { data: p } = await supabase.from('projects').select('*, partners(name)').eq('status', 'active').order('name');
+  if (isStale()) return;
   const categories = c ?? [], projects = p ?? [];
 
   container.querySelector('#bkProject').innerHTML = projects.map(p => `<option value="${p.id}">${p.name} (${p.partners?.name ?? ''})</option>`).join('');
