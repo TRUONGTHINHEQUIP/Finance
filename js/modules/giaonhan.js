@@ -3,102 +3,112 @@ import { supabase } from '../core/config.js';
 import { todayStr, daysBetween, esc } from '../core/utils.js';
 import { renderApprovalCard, bindApprovalConfirm } from '../core/approvalUI.js';
 import { renderAttachmentRow, bindAttachmentEvents } from '../core/attachments.js';
+import { openModal, closeModal } from '../core/modal.js';
 
 export async function render(container, profile) {
   container.innerHTML = `
     <div class="page-head">
-      <div><h1>Giao nhận</h1><div class="sub">Kho nhập tạm → xác nhận thực nhận trong 3 ngày làm việc → chính thức</div></div>
-      <button class="btn" id="btnNewPhieu">+ Tạo phiếu xuất mới</button>
+      <div><h1>Giao nhận</h1><div class="sub">Theo dõi theo từng phiếu, xác nhận trong 3 ngày làm việc</div></div>
+      <button class="btn" id="btnNewPhieu">+ Tạo phiếu giao nhận mới</button>
     </div>
-
-    <div class="panel" id="newForm" style="display:none; margin-bottom:18px;">
-      <div class="panel-body">
-        <div class="form-row">
-          <div><label>Nơi nhập (dự án)</label><select id="npProject"></select></div>
-          <div><label>Ngày ký phiếu</label><input type="date" id="npDate"></div>
-          <div><label>Tài xế / Nhà xe</label><input type="text" id="npDriver" placeholder="Tên tài xế / nhà xe"></div>
-        </div>
-        <div class="form-row" style="grid-template-columns:2fr 1fr auto;">
-          <select id="npCatSel"></select>
-          <input type="number" id="npQtySel" value="100" min="1">
-          <button class="btn secondary small" id="npAddItem">+ Thêm dòng</button>
-        </div>
-        <div id="npItemList"></div>
-        <div style="margin-top:12px;">
-          <button class="btn small" id="npSubmit">Kho ghi nhận tạm</button>
-          <button class="btn secondary small" id="npCancel">Hủy</button>
-        </div>
-      </div>
-    </div>
-
     <div class="toolbar"><select id="gnFilterProject"><option value="">Tất cả dự án</option></select></div>
     <div class="note-box">Xác nhận thực nhận: mặc định bằng đúng số hàng xuất, chỉ sửa dòng nào bị lệch, rồi bấm "Xác nhận toàn bộ phiếu".</div>
-
     <div id="phieuList" class="loading">Đang tải...</div>
   `;
 
-  let categories = [], projects = [], pendingItems = [];
-
   const { data: c } = await supabase.from('categories').select('*').order('name');
   const { data: p } = await supabase.from('projects').select('*').eq('status', 'active').order('name');
-  categories = c ?? []; projects = p ?? [];
+  const { data: w } = await supabase.from('warehouses').select('*').order('name');
+  const categories = c ?? [], projects = p ?? [], warehouses = w ?? [];
 
-  container.querySelector('#npProject').innerHTML = projects.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
-  container.querySelector('#npCatSel').innerHTML = categories.map(c => `<option value="${c.id}">${c.name}</option>`).join('');
   container.querySelector('#gnFilterProject').innerHTML = '<option value="">Tất cả dự án</option>' +
     projects.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
-  container.querySelector('#npDate').value = todayStr();
 
   const catName = (id) => categories.find(c => c.id === id)?.name ?? '(?)';
   const catUnit = (id) => categories.find(c => c.id === id)?.unit ?? '';
   const projName = (id) => projects.find(p => p.id === id)?.name ?? '(?)';
 
-  function renderPendingItems() {
-    container.querySelector('#npItemList').innerHTML = pendingItems.map((it, idx) =>
-      `<div style="display:flex; justify-content:space-between; padding:6px 10px; background:var(--gray-tint); margin-bottom:4px; font-size:.82rem;">
-        <span>${catName(it.category_id)} — ${it.sl_xuat} ${catUnit(it.category_id)}</span>
-        <button class="btn secondary small" data-remove="${idx}" style="padding:2px 8px;">Xóa</button>
-      </div>`
-    ).join('');
-    container.querySelectorAll('[data-remove]').forEach(b =>
-      b.addEventListener('click', () => { pendingItems.splice(parseInt(b.dataset.remove), 1); renderPendingItems(); }));
-  }
-
-  container.querySelector('#btnNewPhieu').addEventListener('click', () => {
-    pendingItems = []; renderPendingItems();
-    const form = container.querySelector('#newForm');
-    form.style.display = form.style.display === 'none' ? 'block' : 'none';
-  });
-  container.querySelector('#npCancel').addEventListener('click', () => { container.querySelector('#newForm').style.display = 'none'; });
-  container.querySelector('#npAddItem').addEventListener('click', () => {
-    const category_id = container.querySelector('#npCatSel').value;
-    const sl_xuat = parseFloat(container.querySelector('#npQtySel').value) || 1;
-    pendingItems.push({ category_id, sl_xuat });
-    renderPendingItems();
-  });
-
-  container.querySelector('#npSubmit').addEventListener('click', async () => {
-    if (pendingItems.length === 0) { alert('Thêm ít nhất 1 dòng hàng.'); return; }
-    const project_id = container.querySelector('#npProject').value;
-    const ngay_ky = container.querySelector('#npDate').value;
-    const tai_xe = container.querySelector('#npDriver').value || null;
-    const code = 'PGN-' + Date.now().toString().slice(-8);
-
-    const { data: note, error } = await supabase.from('transfer_notes').insert({
-      code, direction: 'xuat_du_an', project_id, ngay_ky, tai_xe, status: 'tam', created_by: profile.id,
-    }).select().single();
-    if (error) { alert('Lỗi tạo phiếu: ' + error.message); return; }
-
-    const items = pendingItems.map(it => ({ transfer_note_id: note.id, category_id: it.category_id, sl_xuat: it.sl_xuat }));
-    const { error: itemsError } = await supabase.from('transfer_note_items').insert(items);
-    if (itemsError) { alert('Lỗi thêm dòng hàng: ' + itemsError.message); return; }
-
-    pendingItems = [];
-    container.querySelector('#newForm').style.display = 'none';
-    loadPhieu();
-  });
-
+  container.querySelector('#btnNewPhieu').addEventListener('click', () => openNewPhieuModal());
   container.querySelector('#gnFilterProject').addEventListener('change', loadPhieu);
+
+  function openNewPhieuModal() {
+    let pendingItems = [];
+
+    const bodyHtml = `
+      <div class="field-row">
+        <div class="field"><label>Nơi xuất (kho)</label><select id="mWarehouse">${warehouses.map(w => `<option value="${w.id}">${w.name}</option>`).join('')}</select></div>
+        <div class="field"><label>Nơi nhập (dự án)</label><select id="mProject">${projects.map(p => `<option value="${p.id}">${p.name}</option>`).join('')}</select></div>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>Ngày ký phiếu</label><input type="date" id="mDate" value="${todayStr()}"></div>
+        <div class="field"><label>Người giao (Kho)</label><input type="text" id="mNguoiGiao" placeholder="Tên nhân viên kho"></div>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>Quản lý duyệt (bên xuất)</label><input type="text" id="mQuanLy" placeholder="Tên quản lý kho"></div>
+        <div class="field"><label>Tài xế / Biển số xe</label><input type="text" id="mTaiXe" placeholder="VD: Nguyễn Văn A / 50E-123.45"></div>
+      </div>
+
+      <div class="field">
+        <label>Dòng hàng</label>
+        <div class="field-row" style="grid-template-columns:2fr 1fr auto; align-items:end;">
+          <select id="mCatSel">${categories.map(c => `<option value="${c.id}">${c.name}</option>`).join('')}</select>
+          <input type="number" id="mQtySel" value="100" min="1">
+          <button class="btn secondary small" id="mAddItem" type="button">+ Thêm</button>
+        </div>
+        <div id="mItemList" style="margin-top:8px;"></div>
+      </div>
+    `;
+
+    const footerHtml = `
+      <button class="btn secondary" id="mCancel">Hủy</button>
+      <button class="btn" id="mSubmit">Kho ghi nhận tạm</button>
+    `;
+
+    const dialog = openModal({ title: 'Tạo phiếu giao nhận mới', bodyHtml, footerHtml, wide: false });
+
+    function renderItems() {
+      dialog.querySelector('#mItemList').innerHTML = pendingItems.map((it, idx) =>
+        `<div class="item-mini-row"><span>${catName(it.category_id)} — ${it.sl_xuat} ${catUnit(it.category_id)}</span>
+         <button class="btn secondary small" data-remove="${idx}" style="padding:2px 8px;">Xóa</button></div>`
+      ).join('');
+      dialog.querySelectorAll('[data-remove]').forEach(b =>
+        b.addEventListener('click', () => { pendingItems.splice(parseInt(b.dataset.remove), 1); renderItems(); }));
+    }
+
+    dialog.querySelector('#mAddItem').addEventListener('click', () => {
+      const category_id = dialog.querySelector('#mCatSel').value;
+      const sl_xuat = parseFloat(dialog.querySelector('#mQtySel').value) || 1;
+      pendingItems.push({ category_id, sl_xuat });
+      renderItems();
+    });
+
+    dialog.querySelector('#mCancel').addEventListener('click', closeModal);
+
+    dialog.querySelector('#mSubmit').addEventListener('click', async () => {
+      if (pendingItems.length === 0) { alert('Thêm ít nhất 1 dòng hàng.'); return; }
+
+      const from_warehouse_id = dialog.querySelector('#mWarehouse').value;
+      const project_id = dialog.querySelector('#mProject').value;
+      const ngay_ky = dialog.querySelector('#mDate').value;
+      const nguoi_giao = dialog.querySelector('#mNguoiGiao').value || null;
+      const quan_ly_xuat = dialog.querySelector('#mQuanLy').value || null;
+      const tai_xe = dialog.querySelector('#mTaiXe').value || null;
+      const code = 'PGN-' + Date.now().toString().slice(-8);
+
+      const { data: note, error } = await supabase.from('transfer_notes').insert({
+        code, direction: 'xuat_du_an', from_warehouse_id, project_id, ngay_ky,
+        nguoi_giao, quan_ly_xuat, tai_xe, status: 'tam', created_by: profile.id,
+      }).select().single();
+      if (error) { alert('Lỗi tạo phiếu: ' + error.message); return; }
+
+      const items = pendingItems.map(it => ({ transfer_note_id: note.id, category_id: it.category_id, sl_xuat: it.sl_xuat }));
+      const { error: itemsError } = await supabase.from('transfer_note_items').insert(items);
+      if (itemsError) { alert('Lỗi thêm dòng hàng: ' + itemsError.message); return; }
+
+      closeModal();
+      loadPhieu();
+    });
+  }
 
   async function loadPhieu() {
     const filterProject = container.querySelector('#gnFilterProject').value;
@@ -112,8 +122,6 @@ export async function render(container, profile) {
     const { data: notes, error } = await q;
     if (error) { container.querySelector('#phieuList').innerHTML = `<div class="error-box">${error.message}</div>`; return; }
 
-    // Fallback 3 ngày làm việc — client-side cho demo; hệ thống thật nên chạy bằng
-    // Supabase Edge Function + cron để không phụ thuộc việc có ai mở trang hay không.
     for (const note of notes) {
       if (note.status === 'tam' && daysBetween(note.ngay_ky, new Date()) > 3) {
         await Promise.all(note.transfer_note_items.map(it =>
@@ -139,7 +147,6 @@ export async function render(container, profile) {
 
     container.querySelector('#phieuList').innerHTML = cards || '<div class="empty-state">Chưa có phiếu nào khớp bộ lọc</div>';
 
-    // Nạp file đính kèm cho từng phiếu
     for (const note of notes) {
       const el = container.querySelector(`#attach-${note.id}`);
       if (el) el.innerHTML = await renderAttachmentRow(note.id);
