@@ -2,7 +2,7 @@
 import { supabase } from '../core/config.js';
 import { fmtNum } from '../core/utils.js';
 
-export async function render(container) {
+export async function render(container, profile, isStale = () => false) {
   container.innerHTML = `
     <div class="page-head">
       <div><h1>Tổng quan</h1><div class="sub">Vị trí tài sản, phiếu chờ xác nhận, và tình trạng bảo trì</div></div>
@@ -19,6 +19,7 @@ export async function render(container) {
     .select('id, status, category_id, warehouses:warehouse_id(name), projects:project_id(name)');
 
   if (error) {
+    if (isStale()) return;
     container.querySelector('#statRow').innerHTML = `<div class="error-box">Lỗi tải dữ liệu: ${error.message}</div>`;
     return;
   }
@@ -31,6 +32,8 @@ export async function render(container) {
     .from('transfer_notes')
     .select('id', { count: 'exact', head: true })
     .eq('status', 'tam');
+
+  if (isStale()) return;
 
   container.querySelector('#statRow').innerHTML = `
     <div class="stat-card"><div class="lbl">Tổng tài sản</div><div class="val">${fmtNum(total)}</div></div>
