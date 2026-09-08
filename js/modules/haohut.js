@@ -2,7 +2,7 @@
 import { supabase } from '../core/config.js';
 import { fmtVND, fmtDate } from '../core/utils.js';
 
-export async function render(container, profile) {
+export async function render(container, profile, isStale = () => false) {
   container.innerHTML = `
     <div class="page-head">
       <div><h1>Hao hụt</h1><div class="sub">Bảng kê theo đợt, độc lập với bảng kê thuê định kỳ — Sale tự quyết % thương lượng</div></div>
@@ -27,6 +27,7 @@ export async function render(container, profile) {
 
   const { data: c } = await supabase.from('categories').select('*').order('name');
   const { data: p } = await supabase.from('projects').select('*').eq('status', 'active').order('name');
+  if (isStale()) return;
   const categories = c ?? [], projects = p ?? [];
 
   container.querySelector('#fProject').innerHTML = projects.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
@@ -37,6 +38,7 @@ export async function render(container, profile) {
 
   async function loadList() {
     const { data, error } = await supabase.from('hao_hut_statements').select('*').order('created_at', { ascending: false });
+    if (isStale()) return;
     const list = container.querySelector('#list');
     if (error) { list.innerHTML = `<div class="error-box">${error.message}</div>`; return; }
 
