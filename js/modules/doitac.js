@@ -1,22 +1,28 @@
 // js/modules/doitac.js
 import { supabase } from '../core/config.js';
-import { fmtDate, fmtVND } from '../core/utils.js';
+import { fmtDate, fmtVND, todayStr } from '../core/utils.js';
+import { openModal, closeModal } from '../core/modal.js';
 
 export async function render(container) {
   container.innerHTML = `
     <div class="page-head">
       <div><h1>Đối tác</h1><div class="sub">Khách hàng, dự án, và đơn giá theo cấu trúc 3 lớp</div></div>
+      <button class="btn" id="btnNewPartner">+ Tạo đối tác mới</button>
     </div>
     <div id="partnerList" class="loading">Đang tải...</div>
   `;
 
-  const { data: partners, error } = await supabase.from('partners').select('*').order('name');
-  if (error) { container.querySelector('#partnerList').innerHTML = `<div class="error-box">${error.message}</div>`; return; }
-
-  const { data: projects } = await supabase.from('projects').select('*').order('name');
-  const { data: categories } = await supabase.from('categories').select('*').order('name');
-
+  let categories = [], projects = [];
   let expanded = {};
+
+  async function loadAll() {
+    const { data: partners, error } = await supabase.from('partners').select('*').order('name');
+    if (error) { container.querySelector('#partnerList').innerHTML = `<div class="error-box">${error.message}</div>`; return; }
+    const { data: proj } = await supabase.from('projects').select('*').order('name');
+    const { data: cats } = await supabase.from('categories').select('*').order('name');
+    projects = proj ?? []; categories = cats ?? [];
+    renderPartners(partners);
+  }
 
   async function getRateTable(partner, project) {
     const rows = [];
@@ -25,60 +31,139 @@ export async function render(container) {
       if (project) {
         const { data: override } = await supabase.from('project_rate_overrides')
           .select('daily_rate').eq('project_id', project.id).eq('category_id', cat.id)
-          .lte('effective_from', new Date().toISOString().slice(0, 10))
-          .order('effective_from', { ascending: false }).limit(1).maybeSingle();
+          .lte('effective_from', todayStr()).order('effective_from', { ascending: false }).limit(1).maybeSingle();
         if (override) { rate = override.daily_rate; isOverride = true; }
       }
       if (rate === null) {
         const { data: base } = await supabase.from('partner_rates')
           .select('daily_rate').eq('partner_id', partner.id).eq('category_id', cat.id)
-          .lte('effective_from', new Date().toISOString().slice(0, 10))
-          .order('effective_from', { ascending: false }).limit(1).maybeSingle();
+          .lte('effective_from', todayStr()).order('effective_from', { ascending: false }).limit(1).maybeSingle();
         rate = base?.daily_rate ?? null;
       }
-      rows.push({ name: cat.name, unit: cat.unit, rate, isOverride });
+      rows.push({ id: cat.id, name: cat.name, unit: cat.unit, rate, isOverride });
     }
     return rows;
   }
 
-  container.querySelector('#partnerList').innerHTML = partners.map(p => {
-    const projs = projects.filter(pr => pr.partner_id === p.id);
-    return `
-    <div class="panel" style="margin-bottom:12px;" data-partner="${p.id}">
-      <div class="panel-body">
-        <h3 style="color:var(--red-dark); font-size:1.1rem;">${p.name}</h3>
-        <div style="font-size:.8rem; color:var(--ink-soft); margin:6px 0 10px; line-height:1.7;">
-          Địa chỉ: ${p.address ?? '—'}<br>MST: ${p.mst ?? '—'}<br>
-          Hợp đồng: ${p.hop_dong_so ?? '—'} ${p.hop_dong_ngay ? '— ký ngày ' + fmtDate(p.hop_dong_ngay) : ''}<br>
-          Kỳ chốt bill: ngày ${p.billing_cutoff_day} hằng tháng
+  function renderPartners(partners) {
+    container.querySelector('#partnerList').innerHTML = partners.map(p => {
+      const projs = projects.filter(pr => pr.partner_id === p.id);
+      return `
+      <div class="panel" style="margin-bottom:12px;" data-partner="${p.id}">
+        <div class="panel-body">
+          <div style="display:flex; justify-content:space-between; align-items:flex-start;">
+            <h3 style="color:var(--red-dark); font-size:1.1rem;">${p.name}</h3>
+            <button class="btn small" data-newrate="${p.id}">+ Tạo báo giá</button>
+          </div>
+          <div style="font-size:.8rem; color:var(--ink-soft); margin:6px 0 10px; line-height:1.7;">
+            Địa chỉ: ${p.address ?? '—'}<br>MST: ${p.mst ?? '—'}<br>
+            Hợp đồng: ${p.hop_dong_so ?? '—'} ${p.hop_dong_ngay ? '— ký ngày ' + fmtDate(p.hop_dong_ngay) : ''}<br>
+            Kỳ chốt bill: ngày ${p.billing_cutoff_day} hằng tháng
+          </div>
+          <div class="chips">
+            <span class="badge tam" style="cursor:pointer;" data-price="${p.id}:default">📋 Bảng giá mặc định</span>
+            ${projs.map(pr => `<span class="badge tam" style="cursor:pointer; margin-left:6px;" data-price="${p.id}:${pr.id}">${pr.name}</span>`).join('')}
+          </div>
+          <div id="price-${p.id}"></div>
         </div>
-        <div class="chips">
-          <span class="badge tam" style="cursor:pointer;" data-price="${p.id}:default">📋 Bảng giá mặc định</span>
-          ${projs.map(pr => `<span class="badge tam" style="cursor:pointer; margin-left:6px;" data-price="${p.id}:${pr.id}">${pr.name}</span>`).join('')}
-        </div>
-        <div id="price-${p.id}"></div>
-      </div>
-    </div>`;
-  }).join('') || '<div class="empty-state">Chưa có đối tác nào — thêm qua Supabase Table Editor.</div>';
+      </div>`;
+    }).join('') || '<div class="empty-state">Chưa có đối tác nào — bấm "Tạo đối tác mới" ở trên.</div>';
 
-  container.querySelectorAll('[data-price]').forEach(chip => {
-    chip.addEventListener('click', async () => {
-      const [partnerId, key] = chip.dataset.price.split(':');
-      expanded[partnerId] = expanded[partnerId] === key ? null : key;
-      const area = container.querySelector(`#price-${partnerId}`);
-      if (!expanded[partnerId]) { area.innerHTML = ''; return; }
-      area.innerHTML = '<div class="loading">Đang tải bảng giá...</div>';
+    container.querySelectorAll('[data-price]').forEach(chip => {
+      chip.addEventListener('click', async () => {
+        const [partnerId, key] = chip.dataset.price.split(':');
+        expanded[partnerId] = expanded[partnerId] === key ? null : key;
+        const area = container.querySelector(`#price-${partnerId}`);
+        if (!expanded[partnerId]) { area.innerHTML = ''; return; }
+        area.innerHTML = '<div class="loading">Đang tải bảng giá...</div>';
 
-      const partner = partners.find(x => x.id === partnerId);
-      const project = key === 'default' ? null : projects.find(x => x.id === key);
-      const rows = await getRateTable(partner, project);
+        const partner = partners.find(x => x.id === partnerId);
+        const project = key === 'default' ? null : projects.find(x => x.id === key);
+        const rows = await getRateTable(partner, project);
 
-      area.innerHTML = `<table style="margin-top:10px;">
-        <thead><tr><th>Chủng loại</th><th>ĐVT</th><th class="num">Đơn giá/ngày</th></tr></thead>
-        <tbody>${rows.map(r => `<tr><td>${r.name}</td><td>${r.unit}</td>
-          <td class="num" style="${r.isOverride ? 'color:var(--red-dark);font-weight:600;' : ''}">${r.rate != null ? fmtVND(r.rate) + (r.isOverride ? ' *' : '') : '— chưa có giá —'}</td></tr>`).join('')}</tbody>
-      </table>
-      ${rows.some(r => r.isOverride) ? '<div class="note-box" style="margin-top:8px;">* Đơn giá riêng cho dự án này, khác giá khung mặc định.</div>' : ''}`;
+        area.innerHTML = `<table style="margin-top:10px;">
+          <thead><tr><th>Chủng loại</th><th>ĐVT</th><th class="num">Đơn giá/ngày</th></tr></thead>
+          <tbody>${rows.map(r => `<tr><td>${r.name}</td><td>${r.unit}</td>
+            <td class="num" style="${r.isOverride ? 'color:var(--red-dark);font-weight:600;' : ''}">${r.rate != null ? fmtVND(r.rate) + (r.isOverride ? ' *' : '') : '— chưa có giá —'}</td></tr>`).join('')}</tbody>
+        </table>
+        ${rows.some(r => r.isOverride) ? '<div class="note-box" style="margin-top:8px;">* Đơn giá riêng cho dự án này, khác giá khung mặc định.</div>' : ''}`;
+      });
     });
-  });
+
+    container.querySelectorAll('[data-newrate]').forEach(btn => {
+      btn.addEventListener('click', () => openRateModal(btn.dataset.newrate, partners));
+    });
+  }
+
+  function openNewPartnerModal() {
+    const bodyHtml = `
+      <div class="field"><label>Tên công ty</label><input type="text" id="pName" placeholder="CÔNG TY ..."></div>
+      <div class="field"><label>Địa chỉ</label><input type="text" id="pAddress"></div>
+      <div class="field-row">
+        <div class="field"><label>Mã số thuế</label><input type="text" id="pMst"></div>
+        <div class="field"><label>Kỳ chốt bill (ngày trong tháng)</label><input type="number" id="pCutoff" value="15" min="1" max="28"></div>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>Số hợp đồng nguyên tắc</label><input type="text" id="pHopDong"></div>
+        <div class="field"><label>Ngày ký hợp đồng</label><input type="date" id="pNgayKy"></div>
+      </div>
+    `;
+    const footerHtml = `<button class="btn secondary" id="pCancel">Hủy</button><button class="btn" id="pSubmit">Tạo đối tác</button>`;
+    const dialog = openModal({ title: 'Tạo đối tác mới', bodyHtml, footerHtml });
+
+    dialog.querySelector('#pCancel').addEventListener('click', closeModal);
+    dialog.querySelector('#pSubmit').addEventListener('click', async () => {
+      const name = dialog.querySelector('#pName').value.trim();
+      if (!name) { alert('Nhập tên công ty.'); return; }
+      const { error } = await supabase.from('partners').insert({
+        name,
+        address: dialog.querySelector('#pAddress').value || null,
+        mst: dialog.querySelector('#pMst').value || null,
+        billing_cutoff_day: parseInt(dialog.querySelector('#pCutoff').value) || 15,
+        hop_dong_so: dialog.querySelector('#pHopDong').value || null,
+        hop_dong_ngay: dialog.querySelector('#pNgayKy').value || null,
+      });
+      if (error) { alert('Lỗi tạo đối tác: ' + error.message); return; }
+      closeModal();
+      loadAll();
+    });
+  }
+
+  function openRateModal(partnerId, partners) {
+    const partner = partners.find(p => p.id === partnerId);
+    const bodyHtml = `
+      <div class="info-box">Bảng giá mặc định (giá khung) áp dụng cho toàn bộ dự án của <b>${partner.name}</b>, trừ khi dự án có đơn giá riêng ghi đè. Chỉ điền chủng loại nào cần đặt/đổi giá, để trống các dòng còn lại.</div>
+      <div class="field"><label>Ngày hiệu lực</label><input type="date" id="rDate" value="${todayStr()}"></div>
+      <div style="max-height:320px; overflow-y:auto; border:1px solid var(--line); border-radius:6px;">
+        <table>
+          <thead><tr><th>Chủng loại</th><th>ĐVT</th><th class="num" style="width:140px;">Đơn giá/ngày</th></tr></thead>
+          <tbody>${categories.map(c => `<tr><td>${c.name}</td><td>${c.unit}</td>
+            <td><input type="number" data-rate-cat="${c.id}" placeholder="—" style="width:120px;"></td></tr>`).join('')}</tbody>
+        </table>
+      </div>
+    `;
+    const footerHtml = `<button class="btn secondary" id="rCancel">Hủy</button><button class="btn" id="rSubmit">Lưu báo giá</button>`;
+    const dialog = openModal({ title: `Tạo báo giá — ${partner.name}`, bodyHtml, footerHtml, wide: true });
+
+    dialog.querySelector('#rCancel').addEventListener('click', closeModal);
+    dialog.querySelector('#rSubmit').addEventListener('click', async () => {
+      const effective_from = dialog.querySelector('#rDate').value;
+      const inputs = dialog.querySelectorAll('[data-rate-cat]');
+      const rows = [];
+      inputs.forEach(inp => {
+        const val = parseFloat(inp.value);
+        if (!isNaN(val) && val > 0) {
+          rows.push({ partner_id: partnerId, category_id: inp.dataset.rateCat, daily_rate: val, effective_from, reason: 'Báo giá thiết lập qua giao diện' });
+        }
+      });
+      if (rows.length === 0) { alert('Nhập ít nhất 1 đơn giá.'); return; }
+      const { error } = await supabase.from('partner_rates').upsert(rows, { onConflict: 'partner_id,category_id,effective_from' });
+      if (error) { alert('Lỗi lưu báo giá: ' + error.message); return; }
+      closeModal();
+      alert(`Đã lưu ${rows.length} dòng đơn giá.`);
+    });
+  }
+
+  container.querySelector('#btnNewPartner').addEventListener('click', openNewPartnerModal);
+  await loadAll();
 }
