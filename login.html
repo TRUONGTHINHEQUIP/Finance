@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Đăng nhập — Trường Thịnh</title>
+<link rel="stylesheet" href="css/main.css">
+<style>
+  body{ display:flex; align-items:center; justify-content:center; min-height:100vh; }
+  .login-box{ background:var(--panel); border:1px solid var(--line); border-top:4px solid var(--red); padding:32px 30px; width:340px; }
+  .login-box h1{ font-size:1.6rem; margin-bottom:4px; }
+  .login-box .sub{ color:var(--ink-soft); font-size:.82rem; margin-bottom:20px; }
+  .login-box label{ display:block; font-size:.78rem; color:var(--ink-soft); margin-bottom:4px; margin-top:12px; }
+  .login-box input{ width:100%; }
+  .login-box .btn{ width:100%; margin-top:20px; padding:10px; }
+</style>
+</head>
+<body>
+
+<div class="login-box">
+  <h1>TRƯỜNG THỊNH</h1>
+  <div class="sub">Đăng nhập hệ thống quản lý tài sản thiết bị</div>
+
+  <label for="email">Email</label>
+  <input type="email" id="email" placeholder="ten@truongthinhequip.com" autocomplete="username">
+
+  <label for="password">Mật khẩu</label>
+  <input type="password" id="password" autocomplete="current-password">
+
+  <div id="errorBox" class="error-box" style="display:none;"></div>
+
+  <button class="btn" id="btnLogin">Đăng nhập</button>
+</div>
+
+<script type="module">
+  import { supabase } from './js/core/config.js';
+
+  const { data: { session } } = await supabase.auth.getSession();
+  if (session) window.location.href = 'index.html';
+
+  const errorBox = document.getElementById('errorBox');
+
+  async function login() {
+    const email = document.getElementById('email').value.trim();
+    const password = document.getElementById('password').value;
+    errorBox.style.display = 'none';
+    if (!email || !password) {
+      errorBox.textContent = 'Nhập đủ email và mật khẩu.';
+      errorBox.style.display = 'block';
+      return;
+    }
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) {
+      errorBox.textContent = 'Sai email hoặc mật khẩu, hoặc tài khoản chưa được cấp quyền.';
+      errorBox.style.display = 'block';
+      return;
+    }
+    window.location.href = 'index.html';
+  }
+
+  document.getElementById('btnLogin').addEventListener('click', login);
+  document.getElementById('password').addEventListener('keydown', (e) => { if (e.key === 'Enter') login(); });
+</script>
+
+</body>
+</html>
