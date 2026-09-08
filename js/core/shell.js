@@ -1,45 +1,70 @@
 // js/core/shell.js
-// Sidebar dùng chung + hash routing. main.js chỉ cần gọi initShell(profile).
+// Topbar + sidebar (nhóm mục) + hash routing. main.js chỉ cần gọi initShell(profile).
 // Mỗi module trong js/modules/ export 1 hàm render(container, profile) duy nhất.
 
 import { roleLabel, signOut } from './auth.js';
 
-const ROUTES = {
-  '':         { module: 'dashboard', label: 'Tổng quan' },
-  'taisan':   { module: 'taisan',    label: 'Tài sản' },
-  'doitac':   { module: 'doitac',    label: 'Đối tác' },
-  'giaonhan': { module: 'giaonhan',  label: 'Giao nhận' },
-  'bangke':   { module: 'bangke',    label: 'Bảng kê' },
-  'haohut':   { module: 'haohut',    label: 'Hao hụt' },
-};
+const ROUTE_GROUPS = [
+  {
+    label: 'Tổng quan',
+    routes: [{ key: '', module: 'dashboard', label: 'Tổng quan', icon: '◈' }],
+  },
+  {
+    label: 'Nghiệp vụ',
+    routes: [
+      { key: 'taisan', module: 'taisan', label: 'Tài sản', icon: '▤' },
+      { key: 'doitac', module: 'doitac', label: 'Đối tác', icon: '◫' },
+      { key: 'giaonhan', module: 'giaonhan', label: 'Giao nhận', icon: '⇄' },
+      { key: 'bangke', module: 'bangke', label: 'Bảng kê', icon: '▦' },
+      { key: 'haohut', module: 'haohut', label: 'Hao hụt', icon: '⚠' },
+    ],
+  },
+  {
+    label: 'Quản trị',
+    adminOnly: true,
+    routes: [{ key: 'users', module: 'users', label: 'Người dùng', icon: '⚙' }],
+  },
+];
+
+function allRoutes() {
+  return ROUTE_GROUPS.flatMap(g => g.routes);
+}
 
 function currentRouteKey() {
   const hash = window.location.hash.replace(/^#\/?/, '');
-  return ROUTES[hash] ? hash : '';
+  return allRoutes().some(r => r.key === hash) ? hash : '';
 }
 
-function renderSidebar(profile, activeKey) {
-  const navHtml = Object.entries(ROUTES).map(([key, r]) =>
-    `<a href="#/${key}" data-route="${key}" class="${key === activeKey ? 'active' : ''}">${r.label}</a>`
-  ).join('');
-
-  document.getElementById('sidebar').innerHTML = `
-    <div class="brand">
-      <div class="name">TRƯỜNG THỊNH</div>
-      <div class="tag">Quản lý tài sản thiết bị</div>
-    </div>
-    <nav class="nav">${navHtml}</nav>
-    <div class="sidebar-foot">
-      <div class="who">${profile.full_name} · ${roleLabel(profile.role)}</div>
+function renderTopbar(profile) {
+  document.getElementById('topbar').innerHTML = `
+    <div class="brand"><span class="dot"></span><span class="name">TRƯỜNG THỊNH</span></div>
+    <div class="user">
+      <span>${profile.full_name}</span>
+      <span class="role-chip">${roleLabel(profile.role)}</span>
       <button id="btnSignOut">Đăng xuất</button>
     </div>
   `;
   document.getElementById('btnSignOut').addEventListener('click', signOut);
 }
 
+function renderSidebar(profile, activeKey) {
+  const groupsHtml = ROUTE_GROUPS
+    .filter(g => !g.adminOnly || profile.role === 'admin')
+    .map(g => `
+      <div class="group-label">${g.label}</div>
+      <nav class="nav">
+        ${g.routes.map(r => `<a href="#/${r.key}" data-route="${r.key}" class="${r.key === activeKey ? 'active' : ''}">
+          <span class="ico">${r.icon}</span>${r.label}
+        </a>`).join('')}
+      </nav>
+    `).join('');
+
+  document.getElementById('sidebar').innerHTML = groupsHtml;
+}
+
 async function loadRoute(profile) {
   const key = currentRouteKey();
-  const route = ROUTES[key];
+  const route = allRoutes().find(r => r.key === key);
   const content = document.getElementById('content');
   content.innerHTML = '<div class="loading">Đang tải...</div>';
 
@@ -55,6 +80,7 @@ async function loadRoute(profile) {
 }
 
 export function initShell(profile) {
+  renderTopbar(profile);
   renderSidebar(profile, currentRouteKey());
   window.addEventListener('hashchange', () => loadRoute(profile));
   loadRoute(profile);
