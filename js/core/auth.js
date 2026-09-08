@@ -31,5 +31,5 @@ export async function signOut() {
 }
 
 export function roleLabel(role) {
-  return { kho: 'Kho', sale: 'Sale', ke_toan: 'Kế toán', bgd: 'BGD' }[role] || role;
+  return { kho: 'Kho', sale: 'Sale', ke_toan: 'Kế toán', bgd: 'BGD', admin: 'Admin' }[role] || role;
 }
