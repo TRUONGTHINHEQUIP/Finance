@@ -3,7 +3,7 @@ import { supabase } from '../core/config.js';
 import { fmtDate, fmtVND, todayStr } from '../core/utils.js';
 import { openModal, closeModal } from '../core/modal.js';
 
-export async function render(container) {
+export async function render(container, profile, isStale = () => false) {
   container.innerHTML = `
     <div class="page-head">
       <div><h1>Đối tác</h1><div class="sub">Khách hàng, dự án, và đơn giá theo cấu trúc 3 lớp</div></div>
@@ -17,9 +17,11 @@ export async function render(container) {
 
   async function loadAll() {
     const { data: partners, error } = await supabase.from('partners').select('*').order('name');
+    if (isStale()) return;
     if (error) { container.querySelector('#partnerList').innerHTML = `<div class="error-box">${error.message}</div>`; return; }
     const { data: proj } = await supabase.from('projects').select('*').order('name');
     const { data: cats } = await supabase.from('categories').select('*').order('name');
+    if (isStale()) return;
     projects = proj ?? []; categories = cats ?? [];
     renderPartners(partners);
   }
