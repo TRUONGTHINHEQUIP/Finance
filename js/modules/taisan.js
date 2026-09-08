@@ -2,7 +2,7 @@
 import { supabase } from '../core/config.js';
 import { fmtNum, fmtVND } from '../core/utils.js';
 
-export async function render(container) {
+export async function render(container, profile, isStale = () => false) {
   container.innerHTML = `
     <div class="page-head">
       <div><h1>Tài sản</h1><div class="sub">Tồn theo chủng loại, vị trí, và giá trị</div></div>
@@ -23,12 +23,15 @@ export async function render(container) {
   let allRows = [];
 
   const { data: groups } = await supabase.from('groups').select('*').order('id');
+  if (isStale()) return;
   container.querySelector('#filterGroup').innerHTML = '<option value="">Tất cả nhóm hàng</option>' +
     (groups ?? []).map(g => `<option value="${g.id}">${g.id} — ${g.name}</option>`).join('');
 
   const { data: assets, error } = await supabase
     .from('asset_units')
     .select('status, category_id, categories(name, unit, group_id, ref_value), warehouses:warehouse_id(name), projects:project_id(name)');
+
+  if (isStale()) return;
 
   if (error) {
     container.querySelector('#assetTable').innerHTML = `<tr><td class="error-box">${error.message}</td></tr>`;
