@@ -5,7 +5,7 @@ import { renderApprovalCard, bindApprovalConfirm } from '../core/approvalUI.js';
 import { renderAttachmentRow, bindAttachmentEvents } from '../core/attachments.js';
 import { openModal, closeModal } from '../core/modal.js';
 
-export async function render(container, profile) {
+export async function render(container, profile, isStale = () => false) {
   container.innerHTML = `
     <div class="page-head">
       <div><h1>Giao nhận</h1><div class="sub">Theo dõi theo từng phiếu, xác nhận trong 3 ngày làm việc</div></div>
@@ -19,6 +19,7 @@ export async function render(container, profile) {
   const { data: c } = await supabase.from('categories').select('*').order('name');
   const { data: p } = await supabase.from('projects').select('*').eq('status', 'active').order('name');
   const { data: w } = await supabase.from('warehouses').select('*').order('name');
+  if (isStale()) return;
   const categories = c ?? [], projects = p ?? [], warehouses = w ?? [];
 
   container.querySelector('#gnFilterProject').innerHTML = '<option value="">Tất cả dự án</option>' +
@@ -120,6 +121,7 @@ export async function render(container, profile) {
     if (filterProject) q = q.eq('project_id', filterProject);
 
     const { data: notes, error } = await q;
+    if (isStale()) return;
     if (error) { container.querySelector('#phieuList').innerHTML = `<div class="error-box">${error.message}</div>`; return; }
 
     for (const note of notes) {
@@ -132,6 +134,8 @@ export async function render(container, profile) {
         note.transfer_note_items = note.transfer_note_items.map(it => ({ ...it, sl_thuc_nhan: it.sl_xuat }));
       }
     }
+
+    if (isStale()) return;
 
     const cards = notes.map(note => renderApprovalCard({
       id: note.id, code: note.code, ngay_ky: note.ngay_ky, status: note.status, late_flag: note.late_flag,
@@ -151,6 +155,7 @@ export async function render(container, profile) {
       const el = container.querySelector(`#attach-${note.id}`);
       if (el) el.innerHTML = await renderAttachmentRow(note.id);
     }
+    if (isStale()) return;
     bindAttachmentEvents(container);
 
     bindApprovalConfirm(container, notes.map(n => ({ id: n.id, items: n.transfer_note_items })), async (noteId, updates) => {
