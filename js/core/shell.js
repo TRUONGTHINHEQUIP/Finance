@@ -62,7 +62,12 @@ function renderSidebar(profile, activeKey) {
   document.getElementById('sidebar').innerHTML = groupsHtml;
 }
 
+let renderToken = 0;
+
 async function loadRoute(profile) {
+  const myToken = ++renderToken;
+  const isStale = () => myToken !== renderToken;
+
   const key = currentRouteKey();
   const route = allRoutes().find(r => r.key === key);
   const content = document.getElementById('content');
@@ -72,8 +77,10 @@ async function loadRoute(profile) {
 
   try {
     const mod = await import(`../modules/${route.module}.js`);
-    await mod.render(content, profile);
+    if (isStale()) return; // đã chuyển sang trang khác trong lúc chờ import module
+    await mod.render(content, profile, isStale);
   } catch (err) {
+    if (isStale()) return; // đã chuyển trang, không cần báo lỗi nữa
     console.error(err);
     content.innerHTML = `<div class="error-box">Lỗi tải trang "${route.label}": ${err.message}</div>`;
   }
