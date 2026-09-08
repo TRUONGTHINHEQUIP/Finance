@@ -10,7 +10,8 @@
 </head>
 <body>
 
-<div class="shell">
+<div id="topbar"></div>
+<div class="body-shell">
   <aside class="sidebar" id="sidebar"></aside>
   <main class="main" id="content">
     <div class="loading">Đang tải...</div>
@@ -18,5 +19,13 @@
 </div>
 
 <script type="module" src="js/main.js"></script>
+<script>
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('service-worker.js').catch(err => console.warn('SW lỗi:', err));
+    });
+  }
+</script>
+
 </body>
 </html>
