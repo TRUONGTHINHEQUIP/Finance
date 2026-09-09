@@ -28,7 +28,30 @@ export async function render(container, profile, isStale = () => false) {
 
   const catName = (id) => categories.find(c => c.id === id)?.name ?? '(?)';
   const catUnit = (id) => categories.find(c => c.id === id)?.unit ?? '';
-  const projName = (id) => projects.find(p => p.id === id)?.name ?? '(?)';
+
+  // Nơi xuất / Nơi nhập giờ độc lập — mỗi bên có thể là Kho hoặc Dự án, không cố định.
+  function locationOptions() {
+    return `
+      <optgroup label="Kho">${warehouses.map(w => `<option value="kho:${w.id}">${w.name}</option>`).join('')}</optgroup>
+      <optgroup label="Dự án">${projects.map(p => `<option value="du_an:${p.id}">${p.name}</option>`).join('')}</optgroup>
+    `;
+  }
+  function locationName(type, id) {
+    if (type === 'kho') return warehouses.find(w => w.id === id)?.name ?? '(?)';
+    if (type === 'du_an') return projects.find(p => p.id === id)?.name ?? '(?)';
+    return '(?)';
+  }
+  // Tương thích ngược với phiếu cũ (trước khi có cột location tổng quát)
+  function resolveFrom(note) {
+    if (note.from_location_type) return locationName(note.from_location_type, note.from_location_id);
+    if (note.from_warehouse_id) return warehouses.find(w => w.id === note.from_warehouse_id)?.name ?? '(?)';
+    return '(?)';
+  }
+  function resolveTo(note) {
+    if (note.to_location_type) return locationName(note.to_location_type, note.to_location_id);
+    if (note.project_id) return projects.find(p => p.id === note.project_id)?.name ?? '(?)';
+    return '(?)';
+  }
 
   container.querySelector('#btnNewPhieu').addEventListener('click', () => openNewPhieuModal());
   container.querySelector('#gnFilterProject').addEventListener('change', loadPhieu);
@@ -47,12 +70,13 @@ export async function render(container, profile, isStale = () => false) {
         <div class="field"><label>Ngày ký phiếu</label><input type="date" id="mDate" value="${todayStr()}"></div>
       </div>
       <div class="field-row">
-        <div class="field"><label>Nơi xuất (kho)</label><select id="mWarehouse">${warehouses.map(w => `<option value="${w.id}">${w.name}</option>`).join('')}</select></div>
-        <div class="field"><label>Nơi nhập (dự án)</label><select id="mProject">${projects.map(p => `<option value="${p.id}">${p.name}</option>`).join('')}</select></div>
+        <div class="field"><label>Nơi xuất</label><select id="mFrom">${locationOptions()}</select></div>
+        <div class="field"><label>Nơi nhập</label><select id="mTo">${locationOptions()}</select></div>
       </div>
+      <div class="note-box" style="margin-top:0;">Nơi xuất/nhập có thể là Kho hoặc Dự án tùy tình huống — VD dự án trả hàng về thì Nơi xuất chọn Dự án, Nơi nhập chọn Kho.</div>
       <div class="field-row">
-        <div class="field"><label>Người giao (Kho)</label><input type="text" id="mNguoiGiao" placeholder="Tên nhân viên kho"></div>
-        <div class="field"><label>Quản lý duyệt (bên xuất)</label><input type="text" id="mQuanLy" placeholder="Tên quản lý kho"></div>
+        <div class="field"><label>Người giao (bên xuất)</label><input type="text" id="mNguoiGiao" placeholder="Tên người giao"></div>
+        <div class="field"><label>Quản lý duyệt (bên xuất)</label><input type="text" id="mQuanLy" placeholder="Tên quản lý"></div>
       </div>
       <div class="field-row" style="grid-template-columns:1fr 1fr 1fr;">
         <div class="field"><label>Đơn vị vận chuyển</label><input type="text" id="mNhaXe" placeholder="Tên nhà xe"></div>
@@ -120,8 +144,19 @@ export async function render(container, profile, isStale = () => false) {
 
       if (rows.length === 0) { alert('Thêm ít nhất 1 dòng hàng có số lượng hợp lệ.'); return; }
 
-      const from_warehouse_id = dialog.querySelector('#mWarehouse').value;
-      const project_id = dialog.querySelector('#mProject').value;
+      const [fromType, fromId] = dialog.querySelector('#mFrom').value.split(':');
+      const [toType, toId] = dialog.querySelector('#mTo').value.split(':');
+      if (fromType === toType && fromId === toId) { alert('Nơi xuất và Nơi nhập không được trùng nhau.'); return; }
+
+      // direction chỉ dùng để phân loại/lọc thô — logic tính bill dựa vào project_id, không dựa vào direction
+      let direction = 'dieu_chuyen_kho';
+      if (fromType === 'kho' && toType === 'du_an') direction = 'xuat_du_an';
+      else if (fromType === 'du_an' && toType === 'kho') direction = 'nhap_kho';
+
+      // project_id vẫn giữ để phần tính bill (billing.js) hoạt động không đổi —
+      // lấy đúng bên nào là dự án (nếu cả 2 bên đều là dự án, đây là hạn chế cần bàn thêm sau)
+      const project_id = fromType === 'du_an' ? fromId : (toType === 'du_an' ? toId : null);
+
       const ngay_ky = dialog.querySelector('#mDate').value;
       const nguoi_giao = dialog.querySelector('#mNguoiGiao').value || null;
       const quan_ly_xuat = dialog.querySelector('#mQuanLy').value || null;
@@ -135,7 +170,10 @@ export async function render(container, profile, isStale = () => false) {
       submitBtn.disabled = true; submitBtn.textContent = 'Đang tạo...';
 
       const { data: note, error } = await supabase.from('transfer_notes').insert({
-        code, direction: 'xuat_du_an', from_warehouse_id, project_id, ngay_ky,
+        code, direction, ngay_ky,
+        from_location_type: fromType, from_location_id: fromId,
+        to_location_type: toType, to_location_id: toId,
+        project_id,
         nguoi_giao, quan_ly_xuat, nha_xe, bien_so, loai_xe_id, status: 'tam', created_by: profile.id,
       }).select().single();
       if (error) { alert('Lỗi tạo phiếu: ' + error.message); submitBtn.disabled = false; submitBtn.textContent = 'Kho ghi nhận tạm'; return; }
@@ -158,7 +196,6 @@ export async function render(container, profile, isStale = () => false) {
     const filterProject = container.querySelector('#gnFilterProject').value;
     let q = supabase.from('transfer_notes')
       .select('*, transfer_note_items(*)')
-      .eq('direction', 'xuat_du_an')
       .order('created_at', { ascending: false })
       .limit(50);
     if (filterProject) q = q.eq('project_id', filterProject);
@@ -182,7 +219,7 @@ export async function render(container, profile, isStale = () => false) {
 
     const cards = notes.map(note => renderApprovalCard({
       id: note.id, code: note.code, ngay_ky: note.ngay_ky, status: note.status, late_flag: note.late_flag,
-      meta: `Nơi nhập: ${esc(projName(note.project_id))}`,
+      meta: `${esc(resolveFrom(note))} → ${esc(resolveTo(note))}`,
       items: note.transfer_note_items.map(it => ({
         id: it.id, label: catName(it.category_id), unit: catUnit(it.category_id),
         sl_xuat: it.sl_xuat, sl_thuc_nhan: it.sl_thuc_nhan, tinh_trang: it.tinh_trang,
