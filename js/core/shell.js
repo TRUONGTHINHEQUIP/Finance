@@ -22,7 +22,10 @@ const ROUTE_GROUPS = [
   {
     label: 'Quản trị',
     adminOnly: true,
-    routes: [{ key: 'users', module: 'users', label: 'Người dùng', icon: '⚙' }],
+    routes: [
+      { key: 'danhmuc', module: 'danhmuc', label: 'Danh mục', icon: '☰' },
+      { key: 'users', module: 'users', label: 'Người dùng', icon: '⚙' },
+    ],
   },
 ];
 
