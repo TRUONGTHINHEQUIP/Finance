@@ -121,6 +121,8 @@ input, select, textarea{ border-radius:5px; }
 td input[type=number]{ width:90px; padding:4px 6px; }
 
 .item-mini-row{ display:flex; justify-content:space-between; align-items:center; padding:7px 10px; background:var(--gray-tint); margin-bottom:5px; font-size:.83rem; border-radius:5px; }
+.approval-extra{ border-top:1px dashed var(--line); background:#FCFBF9; }
+.approval-extra-list{ padding:8px 16px 0; }
 
 @media (max-width:960px){ .stat-row{ grid-template-columns:repeat(2,1fr); } .form-row, .field-row{ grid-template-columns:repeat(2,1fr); } }
 @media (max-width:700px){
