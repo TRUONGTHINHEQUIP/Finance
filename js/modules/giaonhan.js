@@ -1,6 +1,6 @@
 // js/modules/giaonhan.js
 import { supabase } from '../core/config.js';
-import { todayStr, daysBetween, esc } from '../core/utils.js';
+import { todayStr, daysBetween, fmtDate, esc } from '../core/utils.js';
 import { renderApprovalCard, bindApprovalConfirm, bindExtraItemEvents } from '../core/approvalUI.js';
 import { renderAttachmentRow, bindAttachmentEvents, uploadAttachment } from '../core/attachments.js';
 import { openModal, closeModal } from '../core/modal.js';
@@ -244,7 +244,105 @@ export async function render(container, profile, isStale = () => false) {
     });
   }
 
-  // ================= DANH SÁCH PHIẾU =================
+  // ================= XỬ LÝ XÁC NHẬN (dùng chung cho modal chi tiết) =================
+  async function handleConfirm(note, updates, extraItems) {
+    const deficits = updates.filter(u => {
+      const cat = categories.find(cc => cc.id === u.category_id);
+      return cat?.is_convertible && u.sl_thuc_nhan < u.sl_xuat;
+    }).map(u => ({ ...u, category: categories.find(cc => cc.id === u.category_id), deficitQty: u.sl_xuat - u.sl_thuc_nhan }));
+
+    const overshoot = updates.filter(u => u.sl_thuc_nhan > u.sl_xuat).map(u => ({
+      category: categories.find(cc => cc.id === u.category_id), qty: u.sl_thuc_nhan - u.sl_xuat,
+    }));
+    const extraSurplus = extraItems.map(e => ({ category: categories.find(cc => cc.id === e.category_id), qty: e.qty }));
+    let surplusPool = [...overshoot, ...extraSurplus];
+
+    let conversions = [];
+    if (deficits.length > 0) {
+      const resolved = await resolveDeficitsModal(deficits, surplusPool);
+      if (resolved === null) return false;
+      conversions = resolved.conversions;
+      surplusPool = resolved.remainingSurplus;
+    }
+
+    for (const u of updates) {
+      await supabase.from('transfer_note_items').update({
+        sl_thuc_nhan: u.sl_thuc_nhan,
+        tinh_trang: u.thieu ? 'Thiếu so với phiếu xuất' : u.sl_thuc_nhan > u.sl_xuat ? 'Dư so với phiếu xuất' : 'Đúng chất lượng, mới 100%',
+      }).eq('id', u.itemId);
+    }
+
+    for (const conv of conversions) {
+      await supabase.from('asset_conversions').insert({
+        transfer_note_item_id: conv.deficit.itemId,
+        category_id_from: conv.surplus.category.id,
+        category_id_to: conv.deficit.category.id,
+        qty_md: conv.qtyMd,
+        performed_by: profile.id,
+      });
+    }
+
+    for (const s of surplusPool) {
+      if (!s.category || s.qty <= 0) continue;
+      const status = note.to_location_type === 'kho' ? 'kho' : note.to_location_type === 'du_an' ? 'tai_du_an' : 'kho';
+      const warehouse_id = note.to_location_type === 'kho' ? note.to_location_id : null;
+      const project_id = note.to_location_type === 'du_an' ? note.to_location_id : null;
+      const seqStart = await nextAssetSeq(s.category.id);
+      const rows = [];
+      for (let i = 0; i < s.qty; i++) {
+        rows.push({
+          asset_code: `${s.category.code}-${String(seqStart + i).padStart(5, '0')}`,
+          category_id: s.category.id, status, warehouse_id, project_id,
+          source: 'phat_hien_du',
+          source_note: `Trả dư khi xác nhận phiếu ${note.code} ngày ${todayStr()}`,
+          created_by: profile.id,
+        });
+      }
+      await supabase.from('asset_units').insert(rows);
+    }
+
+    await supabase.from('transfer_notes').update({
+      status: 'chinh_thuc', confirmed_by: profile.id, confirmed_at: new Date().toISOString(),
+    }).eq('id', note.id);
+
+    return true;
+  }
+
+  // ================= MODAL CHI TIẾT 1 PHIẾU =================
+  function openDetailModal(note) {
+    const categoryOptionsForExtra = categories.map(c => ({ id: c.id, name: c.name, unit: c.unit }));
+
+    const cardHtml = renderApprovalCard({
+      id: note.id, code: note.code, ngay_ky: note.ngay_ky, status: note.status, late_flag: note.late_flag,
+      meta: `${esc(resolveFrom(note))} → ${esc(resolveTo(note))}`,
+      items: note.transfer_note_items.map(it => ({
+        id: it.id, label: catName(it.category_id), unit: catUnit(it.category_id),
+        sl_xuat: it.sl_xuat, sl_thuc_nhan: it.sl_thuc_nhan, tinh_trang: it.tinh_trang,
+      })),
+      categoryOptions: note.status === 'tam' ? categoryOptionsForExtra : null,
+      signInfo: `<span>Người giao: <b>${esc(note.nguoi_giao ?? '—')}</b> · QL duyệt: <b>${esc(note.quan_ly_xuat ?? '—')}</b></span>
+                 <span>Người nhận: <b>${esc(note.nguoi_nhan ?? '— chưa ký —')}</b></span>
+                 <span>Vận chuyển: <b>${esc(note.nha_xe ?? '—')}</b> · Số xe <b>${esc(note.bien_so ?? '—')}</b> · ${esc(vehicleTypes.find(v => v.id === note.loai_xe_id)?.name ?? '—')}</span>`,
+    });
+
+    const dialog = openModal({ title: `Phiếu ${note.code}`, bodyHtml: cardHtml, footerHtml: '', wide: true });
+
+    renderAttachmentRow(note.id).then(html => {
+      const el = dialog.querySelector(`#attach-${note.id}`);
+      if (el) { el.innerHTML = html; bindAttachmentEvents(dialog, profile.id, () => openDetailModal(note)); }
+    });
+
+    if (note.status === 'tam') {
+      const extraState = bindExtraItemEvents(dialog, [{ id: note.id }]);
+      bindApprovalConfirm(dialog, [{ id: note.id, items: note.transfer_note_items }], extraState, async (noteId, updates, extraItems) => {
+        const ok = await handleConfirm(note, updates, extraItems);
+        if (ok) { closeModal(); loadPhieu(); }
+        return ok;
+      });
+    }
+  }
+
+  // ================= DANH SÁCH PHIẾU (bảng gọn, bấm vào xem chi tiết) =================
   async function loadPhieu() {
     const filterProject = container.querySelector('#gnFilterProject').value;
     let q = supabase.from('transfer_notes')
@@ -270,102 +368,30 @@ export async function render(container, profile, isStale = () => false) {
 
     if (isStale()) return;
 
-    const categoryOptionsForExtra = categories.map(c => ({ id: c.id, name: c.name, unit: c.unit }));
+    const rows = notes.map(note => {
+      const badge = note.status === 'tam' ? '<span class="badge tam">Chờ xác nhận</span>'
+        : note.late_flag ? '<span class="badge tre">Xác nhận trễ</span>'
+        : '<span class="badge chinh">Chính thức</span>';
+      const soLuongItems = note.transfer_note_items.length;
+      return `<tr data-open-note="${note.id}" style="cursor:pointer;">
+        <td><b style="color:var(--red-dark);">${esc(note.code)}</b></td>
+        <td>${esc(resolveFrom(note))} → ${esc(resolveTo(note))}</td>
+        <td>${fmtDate(note.ngay_ky)}</td>
+        <td class="num">${soLuongItems} dòng hàng</td>
+        <td>${badge}</td>
+      </tr>`;
+    }).join('');
 
-    const cards = notes.map(note => renderApprovalCard({
-      id: note.id, code: note.code, ngay_ky: note.ngay_ky, status: note.status, late_flag: note.late_flag,
-      meta: `${esc(resolveFrom(note))} → ${esc(resolveTo(note))}`,
-      items: note.transfer_note_items.map(it => ({
-        id: it.id, label: catName(it.category_id), unit: catUnit(it.category_id),
-        sl_xuat: it.sl_xuat, sl_thuc_nhan: it.sl_thuc_nhan, tinh_trang: it.tinh_trang,
-      })),
-      categoryOptions: note.status === 'tam' ? categoryOptionsForExtra : null,
-      signInfo: `<span>Người giao: <b>${esc(note.nguoi_giao ?? '—')}</b> · QL duyệt: <b>${esc(note.quan_ly_xuat ?? '—')}</b></span>
-                 <span>Người nhận: <b>${esc(note.nguoi_nhan ?? '— chưa ký —')}</b></span>
-                 <span>Vận chuyển: <b>${esc(note.nha_xe ?? '—')}</b> · Số xe <b>${esc(note.bien_so ?? '—')}</b> · ${esc(vehicleTypes.find(v => v.id === note.loai_xe_id)?.name ?? '—')}</span>`,
-    })).join('');
+    container.querySelector('#phieuList').innerHTML = `
+      <div class="panel"><div class="panel-body" style="padding:0">
+        <table>
+          <thead><tr><th>Số phiếu</th><th>Tuyến</th><th>Ngày ký</th><th class="num">Số dòng</th><th>Trạng thái</th></tr></thead>
+          <tbody>${rows || '<tr><td colspan="5" class="empty-state">Chưa có phiếu nào khớp bộ lọc</td></tr>'}</tbody>
+        </table>
+      </div></div>`;
 
-    container.querySelector('#phieuList').innerHTML = cards || '<div class="empty-state">Chưa có phiếu nào khớp bộ lọc</div>';
-
-    for (const note of notes) {
-      const el = container.querySelector(`#attach-${note.id}`);
-      if (el) el.innerHTML = await renderAttachmentRow(note.id);
-    }
-    if (isStale()) return;
-    bindAttachmentEvents(container, profile.id, loadPhieu);
-
-    const extraState = bindExtraItemEvents(container, notes.map(n => ({ id: n.id })));
-
-    bindApprovalConfirm(container, notes.map(n => ({ id: n.id, items: n.transfer_note_items })), extraState, async (noteId, updates, extraItems) => {
-      const note = notes.find(n => n.id === noteId);
-
-      // 1. Phát hiện THIẾU ở chủng loại quy đổi được (VD1 — xà gồ/thép hộp...)
-      const deficits = updates.filter(u => {
-        const cat = categories.find(cc => cc.id === u.category_id);
-        return cat?.is_convertible && u.sl_thuc_nhan < u.sl_xuat;
-      }).map(u => ({ ...u, category: categories.find(cc => cc.id === u.category_id), deficitQty: u.sl_xuat - u.sl_thuc_nhan }));
-
-      // 2. Tập hợp nguồn DƯ có thể dùng quy đổi bù (dòng cũ vượt số xuất + dòng phát sinh khai báo thêm)
-      const overshoot = updates.filter(u => u.sl_thuc_nhan > u.sl_xuat).map(u => ({
-        category: categories.find(cc => cc.id === u.category_id), qty: u.sl_thuc_nhan - u.sl_xuat,
-      }));
-      const extraSurplus = extraItems.map(e => ({ category: categories.find(cc => cc.id === e.category_id), qty: e.qty }));
-      let surplusPool = [...overshoot, ...extraSurplus];
-
-      let conversions = [];
-      if (deficits.length > 0) {
-        const resolved = await resolveDeficitsModal(deficits, surplusPool);
-        if (resolved === null) return false; // người dùng hủy — không xác nhận phiếu
-        conversions = resolved.conversions;
-        surplusPool = resolved.remainingSurplus;
-      }
-
-      // 3. Ghi thực nhận — giữ nguyên số đã nhập kể cả vượt số xuất, billing tự tính đúng theo số này
-      for (const u of updates) {
-        await supabase.from('transfer_note_items').update({
-          sl_thuc_nhan: u.sl_thuc_nhan,
-          tinh_trang: u.thieu ? 'Thiếu so với phiếu xuất' : u.sl_thuc_nhan > u.sl_xuat ? 'Dư so với phiếu xuất' : 'Đúng chất lượng, mới 100%',
-        }).eq('id', u.itemId);
-      }
-
-      // 4. Ghi nhận quy đổi quy cách
-      for (const conv of conversions) {
-        await supabase.from('asset_conversions').insert({
-          transfer_note_item_id: conv.deficit.itemId,
-          category_id_from: conv.surplus.category.id,
-          category_id_to: conv.deficit.category.id,
-          qty_md: conv.qtyMd,
-          performed_by: profile.id,
-        });
-      }
-
-      // 5. Phần dư CÒN LẠI (chưa dùng quy đổi) -> tạo tài sản trả dư thật (VD2), không cần BGD duyệt
-      for (const s of surplusPool) {
-        if (!s.category || s.qty <= 0) continue;
-        const status = note.to_location_type === 'kho' ? 'kho' : note.to_location_type === 'du_an' ? 'tai_du_an' : 'kho';
-        const warehouse_id = note.to_location_type === 'kho' ? note.to_location_id : null;
-        const project_id = note.to_location_type === 'du_an' ? note.to_location_id : null;
-        const seqStart = await nextAssetSeq(s.category.id);
-        const rows = [];
-        for (let i = 0; i < s.qty; i++) {
-          rows.push({
-            asset_code: `${s.category.code}-${String(seqStart + i).padStart(5, '0')}`,
-            category_id: s.category.id, status, warehouse_id, project_id,
-            source: 'phat_hien_du',
-            source_note: `Trả dư khi xác nhận phiếu ${note.code} ngày ${todayStr()}`,
-            created_by: profile.id,
-          });
-        }
-        await supabase.from('asset_units').insert(rows);
-      }
-
-      // 6. Chốt phiếu chính thức
-      await supabase.from('transfer_notes').update({
-        status: 'chinh_thuc', confirmed_by: profile.id, confirmed_at: new Date().toISOString(),
-      }).eq('id', noteId);
-
-      loadPhieu();
-      return true;
+    container.querySelectorAll('[data-open-note]').forEach(tr => {
+      tr.addEventListener('click', () => openDetailModal(notes.find(n => n.id === tr.dataset.openNote)));
     });
   }
 
