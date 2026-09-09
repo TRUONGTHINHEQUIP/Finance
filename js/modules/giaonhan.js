@@ -1,7 +1,7 @@
 // js/modules/giaonhan.js
 import { supabase } from '../core/config.js';
 import { todayStr, daysBetween, esc } from '../core/utils.js';
-import { renderApprovalCard, bindApprovalConfirm } from '../core/approvalUI.js';
+import { renderApprovalCard, bindApprovalConfirm, bindExtraItemEvents } from '../core/approvalUI.js';
 import { renderAttachmentRow, bindAttachmentEvents, uploadAttachment } from '../core/attachments.js';
 import { openModal, closeModal } from '../core/modal.js';
 
@@ -12,7 +12,7 @@ export async function render(container, profile, isStale = () => false) {
       <button class="btn" id="btnNewPhieu">+ Tạo phiếu giao nhận mới</button>
     </div>
     <div class="toolbar"><select id="gnFilterProject"><option value="">Tất cả dự án</option></select></div>
-    <div class="note-box">Xác nhận thực nhận: mặc định bằng đúng số hàng xuất, chỉ sửa dòng nào bị lệch, rồi bấm "Xác nhận toàn bộ phiếu".</div>
+    <div class="note-box">Xác nhận thực nhận: mặc định bằng đúng số hàng xuất, sửa dòng nào bị lệch. Nhận thêm chủng loại không có trong phiếu gốc thì khai báo ở "Dòng phát sinh khi nhận".</div>
     <div id="phieuList" class="loading">Đang tải...</div>
   `;
 
@@ -29,7 +29,6 @@ export async function render(container, profile, isStale = () => false) {
   const catName = (id) => categories.find(c => c.id === id)?.name ?? '(?)';
   const catUnit = (id) => categories.find(c => c.id === id)?.unit ?? '';
 
-  // Nơi xuất / Nơi nhập giờ độc lập — mỗi bên có thể là Kho hoặc Dự án, không cố định.
   function locationOptions() {
     return `
       <optgroup label="Kho">${warehouses.map(w => `<option value="kho:${w.id}">${w.name}</option>`).join('')}</optgroup>
@@ -41,7 +40,6 @@ export async function render(container, profile, isStale = () => false) {
     if (type === 'du_an') return projects.find(p => p.id === id)?.name ?? '(?)';
     return '(?)';
   }
-  // Tương thích ngược với phiếu cũ (trước khi có cột location tổng quát)
   function resolveFrom(note) {
     if (note.from_location_type) return locationName(note.from_location_type, note.from_location_id);
     if (note.from_warehouse_id) return warehouses.find(w => w.id === note.from_warehouse_id)?.name ?? '(?)';
@@ -61,6 +59,12 @@ export async function render(container, profile, isStale = () => false) {
     return 'PGN-' + String((count ?? 0) + 1).padStart(6, '0');
   }
 
+  async function nextAssetSeq(categoryId) {
+    const { count } = await supabase.from('asset_units').select('id', { count: 'exact', head: true }).eq('category_id', categoryId);
+    return (count ?? 0) + 1;
+  }
+
+  // ================= TẠO PHIẾU MỚI =================
   async function openNewPhieuModal() {
     const previewCode = await nextCode();
 
@@ -132,7 +136,7 @@ export async function render(container, profile, isStale = () => false) {
     }
 
     dialog.querySelector('#mAddRow').addEventListener('click', addRow);
-    addRow(); // sẵn 1 dòng đầu tiên cho tiện nhập ngay
+    addRow();
 
     dialog.querySelector('#mCancel').addEventListener('click', closeModal);
 
@@ -148,13 +152,10 @@ export async function render(container, profile, isStale = () => false) {
       const [toType, toId] = dialog.querySelector('#mTo').value.split(':');
       if (fromType === toType && fromId === toId) { alert('Nơi xuất và Nơi nhập không được trùng nhau.'); return; }
 
-      // direction chỉ dùng để phân loại/lọc thô — logic tính bill dựa vào project_id, không dựa vào direction
       let direction = 'dieu_chuyen_kho';
       if (fromType === 'kho' && toType === 'du_an') direction = 'xuat_du_an';
       else if (fromType === 'du_an' && toType === 'kho') direction = 'nhap_kho';
 
-      // project_id vẫn giữ để phần tính bill (billing.js) hoạt động không đổi —
-      // lấy đúng bên nào là dự án (nếu cả 2 bên đều là dự án, đây là hạn chế cần bàn thêm sau)
       const project_id = fromType === 'du_an' ? fromId : (toType === 'du_an' ? toId : null);
 
       const ngay_ky = dialog.querySelector('#mDate').value;
@@ -192,6 +193,58 @@ export async function render(container, profile, isStale = () => false) {
     });
   }
 
+  // ================= MODAL XỬ LÝ CHÊNH LỆCH (thiếu ở chủng loại quy đổi được) =================
+  // Trả về { conversions, remainingSurplus } nếu xử lý xong, hoặc null nếu người dùng hủy hẳn (không xác nhận phiếu)
+  function resolveDeficitsModal(deficits, surplusPool) {
+    return new Promise((resolve) => {
+      const bodyHtml = `
+        <div class="error-box">Phát hiện ${deficits.length} chủng loại có thể quy đổi đang THIẾU so với số xuất — xử lý quy đổi trước khi xác nhận (hoặc bỏ qua để coi là thiếu thật).</div>
+        ${deficits.map((d, idx) => `
+          <div style="border:1px solid var(--line); padding:12px; border-radius:6px; margin-bottom:10px;">
+            <b>${esc(d.category.name)}</b> — thiếu ${d.deficitQty} ${esc(d.category.unit)}
+            <div class="field-row" style="margin-top:8px;">
+              <div class="field"><label>Quy đổi từ dòng dư nào?</label>
+                <select data-deficit-source="${idx}">
+                  <option value="">— Không quy đổi, coi là thiếu thật —</option>
+                  ${surplusPool.map((s, sIdx) => `<option value="${sIdx}">${esc(s.category.name)} (dư ${s.qty} ${esc(s.category.unit)})</option>`).join('')}
+                </select>
+              </div>
+              <div class="field"><label>Mét dài quy đổi (nếu có)</label><input type="number" step="0.01" data-deficit-md="${idx}" placeholder="VD 40"></div>
+            </div>
+          </div>
+        `).join('')}
+      `;
+      const footerHtml = `<button class="btn secondary" id="rdCancel">Hủy, không xác nhận phiếu</button><button class="btn" id="rdSubmit">Xác nhận xử lý</button>`;
+      const dialog = openModal({ title: 'Xử lý chênh lệch quy cách', bodyHtml, footerHtml, wide: true });
+
+      dialog.querySelector('#rdCancel').addEventListener('click', () => { closeModal(); resolve(null); });
+      dialog.querySelector('#rdSubmit').addEventListener('click', () => {
+        const conversions = [];
+        const usedSurplusIdx = new Set();
+        let unresolvedCount = 0;
+
+        deficits.forEach((d, idx) => {
+          const sourceSel = dialog.querySelector(`[data-deficit-source="${idx}"]`);
+          const mdInput = dialog.querySelector(`[data-deficit-md="${idx}"]`);
+          if (sourceSel.value === '') { unresolvedCount++; return; }
+          const sIdx = parseInt(sourceSel.value);
+          conversions.push({ deficit: d, surplus: surplusPool[sIdx], qtyMd: parseFloat(mdInput.value) || 0 });
+          usedSurplusIdx.add(sIdx);
+        });
+
+        if (unresolvedCount > 0) {
+          const ok = confirm(`Còn ${unresolvedCount} chủng loại chưa quy đổi — sẽ ghi nhận là THIẾU THẬT, không tự tạo hao hụt (Kho/Sale xử lý riêng sau). Vẫn tiếp tục xác nhận phiếu?`);
+          if (!ok) return; // ở lại modal, không đóng
+        }
+
+        const remainingSurplus = surplusPool.filter((s, i) => !usedSurplusIdx.has(i));
+        closeModal();
+        resolve({ conversions, remainingSurplus });
+      });
+    });
+  }
+
+  // ================= DANH SÁCH PHIẾU =================
   async function loadPhieu() {
     const filterProject = container.querySelector('#gnFilterProject').value;
     let q = supabase.from('transfer_notes')
@@ -217,6 +270,8 @@ export async function render(container, profile, isStale = () => false) {
 
     if (isStale()) return;
 
+    const categoryOptionsForExtra = categories.map(c => ({ id: c.id, name: c.name, unit: c.unit }));
+
     const cards = notes.map(note => renderApprovalCard({
       id: note.id, code: note.code, ngay_ky: note.ngay_ky, status: note.status, late_flag: note.late_flag,
       meta: `${esc(resolveFrom(note))} → ${esc(resolveTo(note))}`,
@@ -224,6 +279,7 @@ export async function render(container, profile, isStale = () => false) {
         id: it.id, label: catName(it.category_id), unit: catUnit(it.category_id),
         sl_xuat: it.sl_xuat, sl_thuc_nhan: it.sl_thuc_nhan, tinh_trang: it.tinh_trang,
       })),
+      categoryOptions: note.status === 'tam' ? categoryOptionsForExtra : null,
       signInfo: `<span>Người giao: <b>${esc(note.nguoi_giao ?? '—')}</b> · QL duyệt: <b>${esc(note.quan_ly_xuat ?? '—')}</b></span>
                  <span>Người nhận: <b>${esc(note.nguoi_nhan ?? '— chưa ký —')}</b></span>
                  <span>Vận chuyển: <b>${esc(note.nha_xe ?? '—')}</b> · Số xe <b>${esc(note.bien_so ?? '—')}</b> · ${esc(vehicleTypes.find(v => v.id === note.loai_xe_id)?.name ?? '—')}</span>`,
@@ -238,17 +294,78 @@ export async function render(container, profile, isStale = () => false) {
     if (isStale()) return;
     bindAttachmentEvents(container, profile.id, loadPhieu);
 
-    bindApprovalConfirm(container, notes.map(n => ({ id: n.id, items: n.transfer_note_items })), async (noteId, updates) => {
+    const extraState = bindExtraItemEvents(container, notes.map(n => ({ id: n.id })));
+
+    bindApprovalConfirm(container, notes.map(n => ({ id: n.id, items: n.transfer_note_items })), extraState, async (noteId, updates, extraItems) => {
+      const note = notes.find(n => n.id === noteId);
+
+      // 1. Phát hiện THIẾU ở chủng loại quy đổi được (VD1 — xà gồ/thép hộp...)
+      const deficits = updates.filter(u => {
+        const cat = categories.find(cc => cc.id === u.category_id);
+        return cat?.is_convertible && u.sl_thuc_nhan < u.sl_xuat;
+      }).map(u => ({ ...u, category: categories.find(cc => cc.id === u.category_id), deficitQty: u.sl_xuat - u.sl_thuc_nhan }));
+
+      // 2. Tập hợp nguồn DƯ có thể dùng quy đổi bù (dòng cũ vượt số xuất + dòng phát sinh khai báo thêm)
+      const overshoot = updates.filter(u => u.sl_thuc_nhan > u.sl_xuat).map(u => ({
+        category: categories.find(cc => cc.id === u.category_id), qty: u.sl_thuc_nhan - u.sl_xuat,
+      }));
+      const extraSurplus = extraItems.map(e => ({ category: categories.find(cc => cc.id === e.category_id), qty: e.qty }));
+      let surplusPool = [...overshoot, ...extraSurplus];
+
+      let conversions = [];
+      if (deficits.length > 0) {
+        const resolved = await resolveDeficitsModal(deficits, surplusPool);
+        if (resolved === null) return false; // người dùng hủy — không xác nhận phiếu
+        conversions = resolved.conversions;
+        surplusPool = resolved.remainingSurplus;
+      }
+
+      // 3. Ghi thực nhận — giữ nguyên số đã nhập kể cả vượt số xuất, billing tự tính đúng theo số này
       for (const u of updates) {
         await supabase.from('transfer_note_items').update({
           sl_thuc_nhan: u.sl_thuc_nhan,
-          tinh_trang: u.thieu ? 'Thiếu so với phiếu xuất' : 'Đúng chất lượng, mới 100%',
+          tinh_trang: u.thieu ? 'Thiếu so với phiếu xuất' : u.sl_thuc_nhan > u.sl_xuat ? 'Dư so với phiếu xuất' : 'Đúng chất lượng, mới 100%',
         }).eq('id', u.itemId);
       }
+
+      // 4. Ghi nhận quy đổi quy cách
+      for (const conv of conversions) {
+        await supabase.from('asset_conversions').insert({
+          transfer_note_item_id: conv.deficit.itemId,
+          category_id_from: conv.surplus.category.id,
+          category_id_to: conv.deficit.category.id,
+          qty_md: conv.qtyMd,
+          performed_by: profile.id,
+        });
+      }
+
+      // 5. Phần dư CÒN LẠI (chưa dùng quy đổi) -> tạo tài sản trả dư thật (VD2), không cần BGD duyệt
+      for (const s of surplusPool) {
+        if (!s.category || s.qty <= 0) continue;
+        const status = note.to_location_type === 'kho' ? 'kho' : note.to_location_type === 'du_an' ? 'tai_du_an' : 'kho';
+        const warehouse_id = note.to_location_type === 'kho' ? note.to_location_id : null;
+        const project_id = note.to_location_type === 'du_an' ? note.to_location_id : null;
+        const seqStart = await nextAssetSeq(s.category.id);
+        const rows = [];
+        for (let i = 0; i < s.qty; i++) {
+          rows.push({
+            asset_code: `${s.category.code}-${String(seqStart + i).padStart(5, '0')}`,
+            category_id: s.category.id, status, warehouse_id, project_id,
+            source: 'phat_hien_du',
+            source_note: `Trả dư khi xác nhận phiếu ${note.code} ngày ${todayStr()}`,
+            created_by: profile.id,
+          });
+        }
+        await supabase.from('asset_units').insert(rows);
+      }
+
+      // 6. Chốt phiếu chính thức
       await supabase.from('transfer_notes').update({
         status: 'chinh_thuc', confirmed_by: profile.id, confirmed_at: new Date().toISOString(),
       }).eq('id', noteId);
+
       loadPhieu();
+      return true;
     });
   }
 
