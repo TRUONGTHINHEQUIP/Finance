@@ -19,8 +19,9 @@ export async function render(container, profile, isStale = () => false) {
   const { data: c } = await supabase.from('categories').select('*').order('name');
   const { data: p } = await supabase.from('projects').select('*').eq('status', 'active').order('name');
   const { data: w } = await supabase.from('warehouses').select('*').order('name');
+  const { data: vt } = await supabase.from('vehicle_types').select('*').order('name');
   if (isStale()) return;
-  const categories = c ?? [], projects = p ?? [], warehouses = w ?? [];
+  const categories = c ?? [], projects = p ?? [], warehouses = w ?? [], vehicleTypes = vt ?? [];
 
   container.querySelector('#gnFilterProject').innerHTML = '<option value="">Tất cả dự án</option>' +
     projects.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
@@ -32,21 +33,32 @@ export async function render(container, profile, isStale = () => false) {
   container.querySelector('#btnNewPhieu').addEventListener('click', () => openNewPhieuModal());
   container.querySelector('#gnFilterProject').addEventListener('change', loadPhieu);
 
-  function openNewPhieuModal() {
+  async function nextCode() {
+    const { count } = await supabase.from('transfer_notes').select('id', { count: 'exact', head: true });
+    return 'PGN-' + String((count ?? 0) + 1).padStart(6, '0');
+  }
+
+  async function openNewPhieuModal() {
     let pendingItems = [];
+    const previewCode = await nextCode();
 
     const bodyHtml = `
+      <div class="field-row">
+        <div class="field"><label>Số phiếu (tự động)</label><input type="text" value="${previewCode}" disabled></div>
+        <div class="field"><label>Ngày ký phiếu</label><input type="date" id="mDate" value="${todayStr()}"></div>
+      </div>
       <div class="field-row">
         <div class="field"><label>Nơi xuất (kho)</label><select id="mWarehouse">${warehouses.map(w => `<option value="${w.id}">${w.name}</option>`).join('')}</select></div>
         <div class="field"><label>Nơi nhập (dự án)</label><select id="mProject">${projects.map(p => `<option value="${p.id}">${p.name}</option>`).join('')}</select></div>
       </div>
       <div class="field-row">
-        <div class="field"><label>Ngày ký phiếu</label><input type="date" id="mDate" value="${todayStr()}"></div>
         <div class="field"><label>Người giao (Kho)</label><input type="text" id="mNguoiGiao" placeholder="Tên nhân viên kho"></div>
-      </div>
-      <div class="field-row">
         <div class="field"><label>Quản lý duyệt (bên xuất)</label><input type="text" id="mQuanLy" placeholder="Tên quản lý kho"></div>
-        <div class="field"><label>Tài xế / Biển số xe</label><input type="text" id="mTaiXe" placeholder="VD: Nguyễn Văn A / 50E-123.45"></div>
+      </div>
+      <div class="field-row" style="grid-template-columns:1fr 1fr 1fr;">
+        <div class="field"><label>Đơn vị vận chuyển</label><input type="text" id="mNhaXe" placeholder="Tên nhà xe"></div>
+        <div class="field"><label>Số xe</label><input type="text" id="mBienSo" placeholder="50E-123.45"></div>
+        <div class="field"><label>Loại xe</label><select id="mLoaiXe"><option value="">— Chọn —</option>${vehicleTypes.map(v => `<option value="${v.id}">${v.name}</option>`).join('')}</select></div>
       </div>
 
       <div class="field">
@@ -56,7 +68,10 @@ export async function render(container, profile, isStale = () => false) {
           <input type="number" id="mQtySel" value="100" min="1">
           <button class="btn secondary small" id="mAddItem" type="button">+ Thêm</button>
         </div>
-        <div id="mItemList" style="margin-top:8px;"></div>
+        <table style="margin-top:10px;">
+          <thead><tr><th style="width:40px;">STT</th><th>Tên hàng &amp; quy cách</th><th>ĐVT</th><th class="num">SL hàng xuất</th><th></th></tr></thead>
+          <tbody id="mItemList"></tbody>
+        </table>
       </div>
     `;
 
@@ -65,16 +80,20 @@ export async function render(container, profile, isStale = () => false) {
       <button class="btn" id="mSubmit">Kho ghi nhận tạm</button>
     `;
 
-    const dialog = openModal({ title: 'Tạo phiếu giao nhận mới', bodyHtml, footerHtml, wide: false });
+    const dialog = openModal({ title: 'Tạo phiếu giao nhận mới', bodyHtml, footerHtml, wide: true });
 
     function renderItems() {
-      dialog.querySelector('#mItemList').innerHTML = pendingItems.map((it, idx) =>
-        `<div class="item-mini-row"><span>${catName(it.category_id)} — ${it.sl_xuat} ${catUnit(it.category_id)}</span>
-         <button class="btn secondary small" data-remove="${idx}" style="padding:2px 8px;">Xóa</button></div>`
-      ).join('');
+      dialog.querySelector('#mItemList').innerHTML = pendingItems.map((it, idx) => `<tr>
+        <td>${idx + 1}</td>
+        <td>${catName(it.category_id)}</td>
+        <td>${catUnit(it.category_id)}</td>
+        <td class="num">${it.sl_xuat}</td>
+        <td><button class="btn secondary small" data-remove="${idx}" style="padding:2px 8px;">Xóa</button></td>
+      </tr>`).join('') || '<tr><td colspan="5" class="empty-state">Chưa có dòng hàng nào</td></tr>';
       dialog.querySelectorAll('[data-remove]').forEach(b =>
         b.addEventListener('click', () => { pendingItems.splice(parseInt(b.dataset.remove), 1); renderItems(); }));
     }
+    renderItems();
 
     dialog.querySelector('#mAddItem').addEventListener('click', () => {
       const category_id = dialog.querySelector('#mCatSel').value;
@@ -93,12 +112,14 @@ export async function render(container, profile, isStale = () => false) {
       const ngay_ky = dialog.querySelector('#mDate').value;
       const nguoi_giao = dialog.querySelector('#mNguoiGiao').value || null;
       const quan_ly_xuat = dialog.querySelector('#mQuanLy').value || null;
-      const tai_xe = dialog.querySelector('#mTaiXe').value || null;
-      const code = 'PGN-' + Date.now().toString().slice(-8);
+      const nha_xe = dialog.querySelector('#mNhaXe').value || null;
+      const bien_so = dialog.querySelector('#mBienSo').value || null;
+      const loai_xe_id = dialog.querySelector('#mLoaiXe').value || null;
+      const code = await nextCode();
 
       const { data: note, error } = await supabase.from('transfer_notes').insert({
         code, direction: 'xuat_du_an', from_warehouse_id, project_id, ngay_ky,
-        nguoi_giao, quan_ly_xuat, tai_xe, status: 'tam', created_by: profile.id,
+        nguoi_giao, quan_ly_xuat, nha_xe, bien_so, loai_xe_id, status: 'tam', created_by: profile.id,
       }).select().single();
       if (error) { alert('Lỗi tạo phiếu: ' + error.message); return; }
 
@@ -146,7 +167,7 @@ export async function render(container, profile, isStale = () => false) {
       })),
       signInfo: `<span>Người giao: <b>${esc(note.nguoi_giao ?? '—')}</b> · QL duyệt: <b>${esc(note.quan_ly_xuat ?? '—')}</b></span>
                  <span>Người nhận: <b>${esc(note.nguoi_nhan ?? '— chưa ký —')}</b></span>
-                 <span>Vận chuyển: <b>${esc(note.tai_xe ?? '—')}</b></span>`,
+                 <span>Vận chuyển: <b>${esc(note.nha_xe ?? '—')}</b> · Số xe <b>${esc(note.bien_so ?? '—')}</b> · ${esc(vehicleTypes.find(v => v.id === note.loai_xe_id)?.name ?? '—')}</span>`,
     })).join('');
 
     container.querySelector('#phieuList').innerHTML = cards || '<div class="empty-state">Chưa có phiếu nào khớp bộ lọc</div>';
