@@ -2,7 +2,7 @@
 import { supabase } from '../core/config.js';
 import { todayStr, daysBetween, esc } from '../core/utils.js';
 import { renderApprovalCard, bindApprovalConfirm } from '../core/approvalUI.js';
-import { renderAttachmentRow, bindAttachmentEvents } from '../core/attachments.js';
+import { renderAttachmentRow, bindAttachmentEvents, uploadAttachment } from '../core/attachments.js';
 import { openModal, closeModal } from '../core/modal.js';
 
 export async function render(container, profile, isStale = () => false) {
@@ -39,7 +39,6 @@ export async function render(container, profile, isStale = () => false) {
   }
 
   async function openNewPhieuModal() {
-    let pendingItems = [];
     const previewCode = await nextCode();
 
     const bodyHtml = `
@@ -63,15 +62,16 @@ export async function render(container, profile, isStale = () => false) {
 
       <div class="field">
         <label>Dòng hàng</label>
-        <div class="field-row" style="grid-template-columns:2fr 1fr auto; align-items:end;">
-          <select id="mCatSel">${categories.map(c => `<option value="${c.id}">${c.name}</option>`).join('')}</select>
-          <input type="number" id="mQtySel" value="100" min="1">
-          <button class="btn secondary small" id="mAddItem" type="button">+ Thêm</button>
-        </div>
-        <table style="margin-top:10px;">
-          <thead><tr><th style="width:40px;">STT</th><th>Tên hàng &amp; quy cách</th><th>ĐVT</th><th class="num">SL hàng xuất</th><th></th></tr></thead>
-          <tbody id="mItemList"></tbody>
+        <table style="margin-top:6px;">
+          <thead><tr><th style="width:40px;">STT</th><th>Tên hàng &amp; quy cách</th><th style="width:90px;">ĐVT</th><th class="num" style="width:130px;">SL hàng xuất</th><th style="width:50px;"></th></tr></thead>
+          <tbody id="mItemRows"></tbody>
         </table>
+        <button class="btn secondary small" id="mAddRow" type="button" style="margin-top:8px;">+ Thêm dòng</button>
+      </div>
+
+      <div class="field">
+        <label>File đính kèm (phiếu ký scan, ảnh giao nhận)</label>
+        <input type="file" id="mFiles" multiple accept=".pdf,image/*">
       </div>
     `;
 
@@ -82,30 +82,43 @@ export async function render(container, profile, isStale = () => false) {
 
     const dialog = openModal({ title: 'Tạo phiếu giao nhận mới', bodyHtml, footerHtml, wide: true });
 
-    function renderItems() {
-      dialog.querySelector('#mItemList').innerHTML = pendingItems.map((it, idx) => `<tr>
-        <td>${idx + 1}</td>
-        <td>${catName(it.category_id)}</td>
-        <td>${catUnit(it.category_id)}</td>
-        <td class="num">${it.sl_xuat}</td>
-        <td><button class="btn secondary small" data-remove="${idx}" style="padding:2px 8px;">Xóa</button></td>
-      </tr>`).join('') || '<tr><td colspan="5" class="empty-state">Chưa có dòng hàng nào</td></tr>';
-      dialog.querySelectorAll('[data-remove]').forEach(b =>
-        b.addEventListener('click', () => { pendingItems.splice(parseInt(b.dataset.remove), 1); renderItems(); }));
-    }
-    renderItems();
+    function addRow() {
+      const tbody = dialog.querySelector('#mItemRows');
+      const row = document.createElement('tr');
+      row.innerHTML = `
+        <td class="stt"></td>
+        <td><select class="row-cat">${categories.map(c => `<option value="${c.id}" data-unit="${c.unit}">${c.name}</option>`).join('')}</select></td>
+        <td class="row-unit">${categories[0]?.unit ?? ''}</td>
+        <td><input type="number" class="row-qty" value="100" min="1"></td>
+        <td><button class="btn secondary small row-remove" type="button" style="padding:2px 8px;">Xóa</button></td>
+      `;
+      tbody.appendChild(row);
 
-    dialog.querySelector('#mAddItem').addEventListener('click', () => {
-      const category_id = dialog.querySelector('#mCatSel').value;
-      const sl_xuat = parseFloat(dialog.querySelector('#mQtySel').value) || 1;
-      pendingItems.push({ category_id, sl_xuat });
-      renderItems();
-    });
+      row.querySelector('.row-cat').addEventListener('change', (e) => {
+        row.querySelector('.row-unit').textContent = e.target.selectedOptions[0].dataset.unit;
+      });
+      row.querySelector('.row-remove').addEventListener('click', () => { row.remove(); renumberRows(); });
+      renumberRows();
+    }
+
+    function renumberRows() {
+      dialog.querySelectorAll('#mItemRows tr').forEach((row, idx) => {
+        row.querySelector('.stt').textContent = idx + 1;
+      });
+    }
+
+    dialog.querySelector('#mAddRow').addEventListener('click', addRow);
+    addRow(); // sẵn 1 dòng đầu tiên cho tiện nhập ngay
 
     dialog.querySelector('#mCancel').addEventListener('click', closeModal);
 
     dialog.querySelector('#mSubmit').addEventListener('click', async () => {
-      if (pendingItems.length === 0) { alert('Thêm ít nhất 1 dòng hàng.'); return; }
+      const rows = Array.from(dialog.querySelectorAll('#mItemRows tr')).map(row => ({
+        category_id: row.querySelector('.row-cat').value,
+        sl_xuat: parseFloat(row.querySelector('.row-qty').value) || 0,
+      })).filter(r => r.sl_xuat > 0);
+
+      if (rows.length === 0) { alert('Thêm ít nhất 1 dòng hàng có số lượng hợp lệ.'); return; }
 
       const from_warehouse_id = dialog.querySelector('#mWarehouse').value;
       const project_id = dialog.querySelector('#mProject').value;
@@ -115,17 +128,26 @@ export async function render(container, profile, isStale = () => false) {
       const nha_xe = dialog.querySelector('#mNhaXe').value || null;
       const bien_so = dialog.querySelector('#mBienSo').value || null;
       const loai_xe_id = dialog.querySelector('#mLoaiXe').value || null;
+      const files = Array.from(dialog.querySelector('#mFiles').files);
       const code = await nextCode();
+
+      const submitBtn = dialog.querySelector('#mSubmit');
+      submitBtn.disabled = true; submitBtn.textContent = 'Đang tạo...';
 
       const { data: note, error } = await supabase.from('transfer_notes').insert({
         code, direction: 'xuat_du_an', from_warehouse_id, project_id, ngay_ky,
         nguoi_giao, quan_ly_xuat, nha_xe, bien_so, loai_xe_id, status: 'tam', created_by: profile.id,
       }).select().single();
-      if (error) { alert('Lỗi tạo phiếu: ' + error.message); return; }
+      if (error) { alert('Lỗi tạo phiếu: ' + error.message); submitBtn.disabled = false; submitBtn.textContent = 'Kho ghi nhận tạm'; return; }
 
-      const items = pendingItems.map(it => ({ transfer_note_id: note.id, category_id: it.category_id, sl_xuat: it.sl_xuat }));
+      const items = rows.map(r => ({ transfer_note_id: note.id, category_id: r.category_id, sl_xuat: r.sl_xuat }));
       const { error: itemsError } = await supabase.from('transfer_note_items').insert(items);
-      if (itemsError) { alert('Lỗi thêm dòng hàng: ' + itemsError.message); return; }
+      if (itemsError) { alert('Lỗi thêm dòng hàng: ' + itemsError.message); submitBtn.disabled = false; submitBtn.textContent = 'Kho ghi nhận tạm'; return; }
+
+      for (const file of files) {
+        try { await uploadAttachment(note.id, file, profile.id); }
+        catch (err) { alert('Tạo phiếu thành công nhưng lỗi tải file đính kèm: ' + err.message); }
+      }
 
       closeModal();
       loadPhieu();
@@ -177,7 +199,7 @@ export async function render(container, profile, isStale = () => false) {
       if (el) el.innerHTML = await renderAttachmentRow(note.id);
     }
     if (isStale()) return;
-    bindAttachmentEvents(container);
+    bindAttachmentEvents(container, profile.id, loadPhieu);
 
     bindApprovalConfirm(container, notes.map(n => ({ id: n.id, items: n.transfer_note_items })), async (noteId, updates) => {
       for (const u of updates) {
