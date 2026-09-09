@@ -1,9 +1,24 @@
 // js/core/attachments.js
-// Hiển thị chip file đính kèm (scan phiếu, ảnh giao nhận) cho 1 transfer_note.
-// Hiện tại chỉ hiển thị placeholder — khi nối Cloudflare R2 thật, thay hàm
-// openAttachment() bằng gọi Edge Function lấy signed URL rồi mở/tải file.
+// File đính kèm thật — dùng Supabase Storage (bucket "attachments", để Public).
+// Không dùng Cloudflare R2 để tránh phải thêm Edge Function/CLI.
 
 import { supabase } from './config.js';
+
+const BUCKET = 'attachments';
+
+export async function uploadAttachment(transferNoteId, file, uploaderId) {
+  const safeName = file.name.replace(/[^\w.\-]/g, '_');
+  const path = `transfer-notes/${transferNoteId}/${Date.now()}-${safeName}`;
+
+  const { error: uploadError } = await supabase.storage.from(BUCKET).upload(path, file);
+  if (uploadError) throw uploadError;
+
+  const file_type = file.type === 'application/pdf' ? 'pdf_scan' : 'photo';
+  const { error: dbError } = await supabase.from('transfer_note_attachments').insert({
+    transfer_note_id: transferNoteId, file_type, r2_key: path, uploaded_by: uploaderId,
+  });
+  if (dbError) throw dbError;
+}
 
 export async function renderAttachmentRow(transferNoteId) {
   const { data, error } = await supabase
@@ -11,28 +26,32 @@ export async function renderAttachmentRow(transferNoteId) {
     .select('*')
     .eq('transfer_note_id', transferNoteId);
 
-  if (error || !data || data.length === 0) {
-    return `<div class="attach-row">
-      <span class="attach-chip" data-upload="${transferNoteId}">📎 Chưa có file — bấm để upload (chưa nối R2)</span>
-    </div>`;
-  }
+  const chips = (!error && data ? data : []).map(a => {
+    const { data: pub } = supabase.storage.from(BUCKET).getPublicUrl(a.r2_key);
+    const icon = a.file_type === 'pdf_scan' ? '📎' : '📷';
+    const label = a.file_type === 'pdf_scan' ? 'Phiếu ký (scan)' : 'Ảnh giao nhận';
+    return `<a class="attach-chip" href="${pub.publicUrl}" target="_blank" rel="noopener">${icon} ${label}</a>`;
+  });
 
   return `<div class="attach-row">
-    ${data.map(a => `<span class="attach-chip" data-view="${a.r2_key}">
-      ${a.file_type === 'pdf_scan' ? '📎' : '📷'} ${a.file_type === 'pdf_scan' ? 'Phiếu ký (scan)' : 'Ảnh giao nhận'}
-    </span>`).join('')}
+    ${chips.join('')}
+    <label class="attach-chip" style="cursor:pointer;">+ Thêm file
+      <input type="file" data-upload-input="${transferNoteId}" style="display:none;" multiple accept=".pdf,image/*">
+    </label>
   </div>`;
 }
 
-export function bindAttachmentEvents(container) {
-  container.querySelectorAll('[data-view]').forEach(chip => {
-    chip.addEventListener('click', () => {
-      alert('Xem trước file đính kèm chưa khả dụng — cần nối Cloudflare R2 qua Edge Function trước.');
-    });
-  });
-  container.querySelectorAll('[data-upload]').forEach(chip => {
-    chip.addEventListener('click', () => {
-      alert('Upload file chưa khả dụng — cần nối Cloudflare R2 qua Edge Function trước.');
+// onUploaded gọi lại sau khi upload xong, để trang tự tải lại danh sách file mới nhất
+export function bindAttachmentEvents(container, uploaderId, onUploaded) {
+  container.querySelectorAll('[data-upload-input]').forEach(input => {
+    input.addEventListener('change', async (e) => {
+      const noteId = input.dataset.uploadInput;
+      const files = Array.from(e.target.files);
+      for (const file of files) {
+        try { await uploadAttachment(noteId, file, uploaderId); }
+        catch (err) { alert('Lỗi tải file lên: ' + err.message + '\n\nKiểm tra đã tạo bucket "attachments" trên Supabase Storage chưa.'); }
+      }
+      if (onUploaded) onUploaded();
     });
   });
 }
