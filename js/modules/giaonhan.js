@@ -54,11 +54,6 @@ export async function render(container, profile, isStale = () => false) {
   container.querySelector('#btnNewPhieu').addEventListener('click', () => openNewPhieuModal());
   container.querySelector('#gnFilterProject').addEventListener('change', loadPhieu);
 
-  async function nextCode() {
-    const { count } = await supabase.from('transfer_notes').select('id', { count: 'exact', head: true });
-    return 'PGN-' + String((count ?? 0) + 1).padStart(6, '0');
-  }
-
   async function nextAssetSeq(categoryId) {
     const { count } = await supabase.from('asset_units').select('id', { count: 'exact', head: true }).eq('category_id', categoryId);
     return (count ?? 0) + 1;
@@ -66,11 +61,9 @@ export async function render(container, profile, isStale = () => false) {
 
   // ================= TẠO PHIẾU MỚI =================
   async function openNewPhieuModal() {
-    const previewCode = await nextCode();
-
     const bodyHtml = `
       <div class="field-row">
-        <div class="field"><label>Số phiếu (tự động)</label><input type="text" value="${previewCode}" disabled></div>
+        <div class="field"><label>Số phiếu (theo đúng số ghi trên giấy tại hiện trường)</label><input type="text" id="mCode" placeholder="VD: 0006302"></div>
         <div class="field"><label>Ngày ký phiếu</label><input type="date" id="mDate" value="${todayStr()}"></div>
       </div>
       <div class="field-row">
@@ -164,8 +157,9 @@ export async function render(container, profile, isStale = () => false) {
       const nha_xe = dialog.querySelector('#mNhaXe').value || null;
       const bien_so = dialog.querySelector('#mBienSo').value || null;
       const loai_xe_id = dialog.querySelector('#mLoaiXe').value || null;
+      const code = dialog.querySelector('#mCode').value.trim();
+      if (!code) { alert('Nhập số phiếu theo đúng giấy tại hiện trường.'); return; }
       const files = Array.from(dialog.querySelector('#mFiles').files);
-      const code = await nextCode();
 
       const submitBtn = dialog.querySelector('#mSubmit');
       submitBtn.disabled = true; submitBtn.textContent = 'Đang tạo...';
@@ -372,12 +366,14 @@ export async function render(container, profile, isStale = () => false) {
       const badge = note.status === 'tam' ? '<span class="badge tam">Chờ xác nhận</span>'
         : note.late_flag ? '<span class="badge tre">Xác nhận trễ</span>'
         : '<span class="badge chinh">Chính thức</span>';
-      const soLuongItems = note.transfer_note_items.length;
+      const tongXuat = note.transfer_note_items.reduce((s, it) => s + Number(it.sl_xuat), 0);
+      const tongThucNhan = note.status === 'tam' ? '-' : note.transfer_note_items.reduce((s, it) => s + Number(it.sl_thuc_nhan ?? 0), 0);
       return `<tr data-open-note="${note.id}" style="cursor:pointer;">
         <td><b style="color:var(--red-dark);">${esc(note.code)}</b></td>
         <td>${esc(resolveFrom(note))} → ${esc(resolveTo(note))}</td>
         <td>${fmtDate(note.ngay_ky)}</td>
-        <td class="num">${soLuongItems} dòng hàng</td>
+        <td class="num">${tongXuat}</td>
+        <td class="num">${tongThucNhan}</td>
         <td>${badge}</td>
       </tr>`;
     }).join('');
@@ -385,8 +381,8 @@ export async function render(container, profile, isStale = () => false) {
     container.querySelector('#phieuList').innerHTML = `
       <div class="panel"><div class="panel-body" style="padding:0">
         <table>
-          <thead><tr><th>Số phiếu</th><th>Tuyến</th><th>Ngày ký</th><th class="num">Số dòng</th><th>Trạng thái</th></tr></thead>
-          <tbody>${rows || '<tr><td colspan="5" class="empty-state">Chưa có phiếu nào khớp bộ lọc</td></tr>'}</tbody>
+          <thead><tr><th>Số phiếu</th><th>Tuyến</th><th>Ngày ký</th><th class="num">SL xuất</th><th class="num">SL thực nhận</th><th>Trạng thái</th></tr></thead>
+          <tbody>${rows || '<tr><td colspan="6" class="empty-state">Chưa có phiếu nào khớp bộ lọc</td></tr>'}</tbody>
         </table>
       </div></div>`;
 
