@@ -84,7 +84,10 @@ export async function render(container, profile, isStale = () => false) {
       </div>
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
         <b>Dự án &amp; bảng giá</b>
-        <button class="btn small" id="dNewRate">+ Tạo báo giá</button>
+        <div style="display:flex; gap:8px;">
+          <button class="btn secondary small" id="dNewProject">+ Tạo dự án mới</button>
+          <button class="btn small" id="dNewRate">+ Tạo báo giá mặc định</button>
+        </div>
       </div>
       <div class="chips" style="margin-bottom:8px;">
         <span class="badge tam" style="cursor:pointer;" data-price="default">📋 Bảng giá mặc định</span>
@@ -109,11 +112,43 @@ export async function render(container, profile, isStale = () => false) {
           <tbody>${rows.map(r => `<tr><td>${esc(r.name)}</td><td>${esc(r.unit)}</td>
             <td class="num" style="${r.isOverride ? 'color:var(--red-dark);font-weight:600;' : ''}">${r.rate != null ? fmtVND(r.rate) + (r.isOverride ? ' *' : '') : '— chưa có giá —'}</td></tr>`).join('')}</tbody>
         </table>
-        ${rows.some(r => r.isOverride) ? '<div class="note-box" style="margin-top:8px;">* Đơn giá riêng cho dự án này, khác giá khung mặc định.</div>' : ''}`;
+        ${rows.some(r => r.isOverride) ? '<div class="note-box" style="margin-top:8px;">* Đơn giá riêng cho dự án này, khác giá khung mặc định.</div>' : ''}
+        ${project ? `<button class="btn secondary small" id="dNewProjectRate" style="margin-top:10px;">+ Đặt giá riêng cho dự án này</button>` : ''}`;
+
+        const projectRateBtn = area.querySelector('#dNewProjectRate');
+        if (projectRateBtn) projectRateBtn.addEventListener('click', () => openRateModal(partner, project));
       });
     });
 
     dialog.querySelector('#dNewRate').addEventListener('click', () => openRateModal(partner));
+    dialog.querySelector('#dNewProject').addEventListener('click', () => openNewProjectModal(partner));
+  }
+
+  // ================= TẠO DỰ ÁN MỚI (trong đúng đối tác đang xem) =================
+  function openNewProjectModal(partner) {
+    const bodyHtml = `
+      <div class="field"><label>Tên dự án</label><input type="text" id="jName" placeholder="VD: Vega Nha Trang"></div>
+      <div class="field"><label>Mã dự án</label><input type="text" id="jCode" placeholder="VD: VEGA"></div>
+    `;
+    const footerHtml = `<button class="btn secondary" id="jCancel">Hủy</button><button class="btn" id="jSubmit">Tạo dự án</button>`;
+    const dialog = openModal({ title: `Tạo dự án mới — ${partner.name}`, bodyHtml, footerHtml });
+
+    dialog.querySelector('#jCancel').addEventListener('click', closeModal);
+    dialog.querySelector('#jSubmit').addEventListener('click', async () => {
+      const name = dialog.querySelector('#jName').value.trim();
+      const code = dialog.querySelector('#jCode').value.trim();
+      if (!name || !code) { alert('Nhập đủ tên dự án và mã dự án.'); return; }
+
+      const { error } = await supabase.from('projects').insert({
+        partner_id: partner.id, name, code, status: 'active',
+      });
+      if (error) { alert('Lỗi tạo dự án: ' + error.message); return; }
+
+      const { data: proj } = await supabase.from('projects').select('*').order('name');
+      projects = proj ?? [];
+      closeModal();
+      openDetailModal(partner); // mở lại modal với danh sách dự án đã cập nhật
+    });
   }
 
   // ================= TẠO ĐỐI TÁC MỚI =================
@@ -151,11 +186,18 @@ export async function render(container, profile, isStale = () => false) {
     });
   }
 
-  // ================= TẠO BÁO GIÁ =================
-  function openRateModal(partner) {
+  // ================= TẠO BÁO GIÁ (mặc định hoặc riêng cho 1 dự án) =================
+  function openRateModal(partner, project = null) {
+    const isProjectRate = !!project;
     const bodyHtml = `
-      <div class="info-box">Bảng giá mặc định (giá khung) áp dụng cho toàn bộ dự án của <b>${esc(partner.name)}</b>, trừ khi dự án có đơn giá riêng ghi đè. Chỉ điền chủng loại nào cần đặt/đổi giá, để trống các dòng còn lại.</div>
-      <div class="field"><label>Ngày hiệu lực</label><input type="date" id="rDate" value="${todayStr()}"></div>
+      <div class="info-box">${isProjectRate
+        ? `Đơn giá riêng chỉ áp dụng cho dự án <b>${esc(project.name)}</b>, ghi đè giá khung mặc định của <b>${esc(partner.name)}</b>.`
+        : `Bảng giá mặc định (giá khung) áp dụng cho toàn bộ dự án của <b>${esc(partner.name)}</b>, trừ khi dự án có đơn giá riêng ghi đè.`}
+        Chỉ điền chủng loại nào cần đặt/đổi giá, để trống các dòng còn lại.</div>
+      <div class="field-row">
+        <div class="field"><label>Ngày hiệu lực</label><input type="date" id="rDate" value="${todayStr()}"></div>
+        ${isProjectRate ? `<div class="field"><label>Lý do đổi giá riêng</label><input type="text" id="rReason" placeholder="VD: Thương lượng riêng theo hợp đồng dự án"></div>` : ''}
+      </div>
       <div style="max-height:320px; overflow-y:auto; border:1px solid var(--line); border-radius:6px;">
         <table>
           <thead><tr><th>Chủng loại</th><th>ĐVT</th><th class="num" style="width:140px;">Đơn giá/ngày</th></tr></thead>
@@ -165,21 +207,27 @@ export async function render(container, profile, isStale = () => false) {
       </div>
     `;
     const footerHtml = `<button class="btn secondary" id="rCancel">Hủy</button><button class="btn" id="rSubmit">Lưu báo giá</button>`;
-    const dialog = openModal({ title: `Tạo báo giá — ${partner.name}`, bodyHtml, footerHtml, wide: true });
+    const dialog = openModal({ title: isProjectRate ? `Đặt giá riêng — ${project.name}` : `Tạo báo giá mặc định — ${partner.name}`, bodyHtml, footerHtml, wide: true });
 
     dialog.querySelector('#rCancel').addEventListener('click', closeModal);
     dialog.querySelector('#rSubmit').addEventListener('click', async () => {
       const effective_from = dialog.querySelector('#rDate').value;
+      const reason = isProjectRate ? (dialog.querySelector('#rReason').value.trim() || 'Đơn giá riêng thiết lập qua giao diện') : 'Báo giá thiết lập qua giao diện';
       const inputs = dialog.querySelectorAll('[data-rate-cat]');
       const rows = [];
       inputs.forEach(inp => {
         const val = parseFloat(inp.value);
         if (!isNaN(val) && val > 0) {
-          rows.push({ partner_id: partner.id, category_id: inp.dataset.rateCat, daily_rate: val, effective_from, reason: 'Báo giá thiết lập qua giao diện' });
+          rows.push(isProjectRate
+            ? { project_id: project.id, category_id: inp.dataset.rateCat, daily_rate: val, effective_from, reason, approved_by: profile.id }
+            : { partner_id: partner.id, category_id: inp.dataset.rateCat, daily_rate: val, effective_from, reason });
         }
       });
       if (rows.length === 0) { alert('Nhập ít nhất 1 đơn giá.'); return; }
-      const { error } = await supabase.from('partner_rates').upsert(rows, { onConflict: 'partner_id,category_id,effective_from' });
+
+      const { error } = isProjectRate
+        ? await supabase.from('project_rate_overrides').upsert(rows, { onConflict: 'project_id,category_id,effective_from' })
+        : await supabase.from('partner_rates').upsert(rows, { onConflict: 'partner_id,category_id,effective_from' });
       if (error) { alert('Lỗi lưu báo giá: ' + error.message); return; }
       closeModal();
       alert(`Đã lưu ${rows.length} dòng đơn giá.`);
