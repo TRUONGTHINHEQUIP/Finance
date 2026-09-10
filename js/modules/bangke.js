@@ -1,6 +1,7 @@
 // js/modules/bangke.js
 import { supabase } from '../core/config.js';
-import { fmtVND, fmtDate, todayStr, addDaysStr } from '../core/utils.js';
+import { openModal } from '../core/modal.js';
+import { fmtVND, fmtDate, todayStr, addDaysStr, esc } from '../core/utils.js';
 import { computeStatement, saveStatement } from '../core/billing.js';
 
 export async function render(container, profile, isStale = () => false) {
@@ -99,11 +100,12 @@ export async function render(container, profile, isStale = () => false) {
   async function loadHistory() {
     const { data, error } = await supabase.from('billing_statements')
       .select('*, projects(name)').order('created_at', { ascending: false }).limit(50);
+    if (isStale()) return;
     const table = container.querySelector('#bkHistoryTable');
     if (error) { table.innerHTML = `<tr><td class="error-box">${error.message}</td></tr>`; return; }
 
-    const rows = (data ?? []).map(s => `<tr>
-      <td>${s.projects?.name ?? '(?)'}</td>
+    const rows = (data ?? []).map(s => `<tr data-open-stmt="${s.id}" style="cursor:pointer;">
+      <td><b style="color:var(--red-dark);">${esc(s.projects?.name ?? '(?)')}</b></td>
       <td class="num">${fmtVND(s.tong_phat_sinh)}</td><td class="num">${fmtVND(s.vat_amount)}</td><td class="num">${fmtVND(s.total)}</td>
       <td><span class="badge ${s.cong_no_status === 'da_thu' ? 'chinh' : s.cong_no_status === 'qua_han' ? 'tre' : 'tam'}">${s.cong_no_status.replace('_', ' ')}</span></td>
       <td>${fmtDate(s.created_at)}</td>
@@ -111,6 +113,35 @@ export async function render(container, profile, isStale = () => false) {
 
     table.innerHTML = `<thead><tr><th>Dự án</th><th class="num">Tổng phát sinh</th><th class="num">VAT</th><th class="num">Tổng thanh toán</th><th>Công nợ</th><th>Ngày tạo</th></tr></thead>
       <tbody>${rows || '<tr><td colspan="6" class="empty-state">Chưa có bảng kê nào được lưu</td></tr>'}</tbody>`;
+
+    table.querySelectorAll('[data-open-stmt]').forEach(tr => {
+      tr.addEventListener('click', () => openStatementDetail((data ?? []).find(s => s.id === tr.dataset.openStmt)));
+    });
+  }
+
+  async function openStatementDetail(statement) {
+    const { data: lines, error } = await supabase.from('billing_statement_lines')
+      .select('*').eq('statement_id', statement.id).order('ngay');
+    if (error) { alert('Lỗi tải chi tiết: ' + error.message); return; }
+
+    const rows = (lines ?? []).map(l => `<tr>
+      <td>${fmtDate(l.ngay)}</td>
+      <td>${l.source_type === 'ton_dau_ky' ? 'TỒN ĐẦU KỲ' : 'Phát Sinh Thuê'}</td>
+      <td>${esc(catName(l.category_id))}</td>
+      <td class="num">${l.so_ngay}</td><td class="num">${l.so_luong}</td>
+      <td class="num">${fmtVND(l.don_gia)}</td><td class="num">${fmtVND(l.thanh_tien)}</td>
+    </tr>`).join('') || '<tr><td colspan="7" class="empty-state">Không có dòng chi tiết</td></tr>';
+
+    const bodyHtml = `
+      <table><thead><tr><th>Ngày ký</th><th>Diễn giải</th><th>Chủng loại</th><th class="num">Số ngày</th><th class="num">SL</th><th class="num">Đơn giá</th><th class="num">Thành tiền</th></tr></thead>
+        <tbody>${rows}</tbody></table>
+      <table style="margin-top:10px;">
+        <tr><td style="border:none;width:70%"></td><td style="border:none;">Tiền thuê</td><td class="num" style="border:none;">${fmtVND(statement.rental_subtotal)}</td></tr>
+        <tr><td style="border:none;"></td><td style="border:none;">VAT (${statement.vat_rate}%)</td><td class="num" style="border:none;">${fmtVND(statement.vat_amount)}</td></tr>
+        <tr><td style="border:none;"></td><td style="border:none;font-weight:700;color:var(--red-dark);">Tổng thanh toán</td><td class="num" style="border:none;font-weight:700;color:var(--red-dark);">${fmtVND(statement.total)}</td></tr>
+      </table>
+    `;
+    openModal({ title: `Bảng kê — ${statement.projects?.name ?? '(?)'}`, bodyHtml, footerHtml: '', wide: true });
   }
 
   container.querySelector('#subTao').addEventListener('click', () => {
