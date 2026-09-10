@@ -20,8 +20,9 @@ export async function render(container, profile, isStale = () => false) {
   const { data: p } = await supabase.from('projects').select('*').eq('status', 'active').order('name');
   const { data: w } = await supabase.from('warehouses').select('*').order('name');
   const { data: vt } = await supabase.from('vehicle_types').select('*').order('name');
+  const { data: tc } = await supabase.from('transport_carriers').select('*').order('name');
   if (isStale()) return;
-  const categories = c ?? [], projects = p ?? [], warehouses = w ?? [], vehicleTypes = vt ?? [];
+  const categories = c ?? [], projects = p ?? [], warehouses = w ?? [], vehicleTypes = vt ?? [], carriers = tc ?? [];
 
   container.querySelector('#gnFilterProject').innerHTML = '<option value="">Tất cả dự án</option>' +
     projects.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
@@ -76,8 +77,8 @@ export async function render(container, profile, isStale = () => false) {
         <div class="field"><label>Quản lý duyệt (bên xuất)</label><input type="text" id="mQuanLy" placeholder="Tên quản lý"></div>
       </div>
       <div class="field-row" style="grid-template-columns:1fr 1fr 1fr;">
-        <div class="field"><label>Đơn vị vận chuyển</label><input type="text" id="mNhaXe" placeholder="Tên nhà xe"></div>
-        <div class="field"><label>Số xe</label><input type="text" id="mBienSo" placeholder="50E-123.45"></div>
+        <div class="field"><label>Đơn vị vận chuyển</label><select id="mNhaXe"><option value="">— Chọn —</option>${carriers.map(c => `<option value="${c.id}">${c.name}</option>`).join('')}</select></div>
+        <div class="field"><label>Số xe</label><input type="text" id="mBienSo" list="mBienSoList" placeholder="50E-123.45"><datalist id="mBienSoList"></datalist></div>
         <div class="field"><label>Loại xe</label><select id="mLoaiXe"><option value="">— Chọn —</option>${vehicleTypes.map(v => `<option value="${v.id}">${v.name}</option>`).join('')}</select></div>
       </div>
 
@@ -131,6 +132,16 @@ export async function render(container, profile, isStale = () => false) {
     dialog.querySelector('#mAddRow').addEventListener('click', addRow);
     addRow();
 
+    dialog.querySelector('#mNhaXe').addEventListener('change', async (e) => {
+      const carrierId = e.target.value;
+      const listEl = dialog.querySelector('#mBienSoList');
+      listEl.innerHTML = '';
+      if (!carrierId) return;
+      const { data } = await supabase.from('transfer_notes').select('bien_so').eq('nha_xe_id', carrierId).not('bien_so', 'is', null);
+      const uniquePlates = [...new Set((data ?? []).map(r => r.bien_so))];
+      listEl.innerHTML = uniquePlates.map(plate => `<option value="${plate}"></option>`).join('');
+    });
+
     dialog.querySelector('#mCancel').addEventListener('click', closeModal);
 
     dialog.querySelector('#mSubmit').addEventListener('click', async () => {
@@ -154,7 +165,7 @@ export async function render(container, profile, isStale = () => false) {
       const ngay_ky = dialog.querySelector('#mDate').value;
       const nguoi_giao = dialog.querySelector('#mNguoiGiao').value || null;
       const quan_ly_xuat = dialog.querySelector('#mQuanLy').value || null;
-      const nha_xe = dialog.querySelector('#mNhaXe').value || null;
+      const nha_xe_id = dialog.querySelector('#mNhaXe').value || null;
       const bien_so = dialog.querySelector('#mBienSo').value || null;
       const loai_xe_id = dialog.querySelector('#mLoaiXe').value || null;
       const code = dialog.querySelector('#mCode').value.trim();
@@ -169,7 +180,7 @@ export async function render(container, profile, isStale = () => false) {
         from_location_type: fromType, from_location_id: fromId,
         to_location_type: toType, to_location_id: toId,
         project_id,
-        nguoi_giao, quan_ly_xuat, nha_xe, bien_so, loai_xe_id, status: 'tam', created_by: profile.id,
+        nguoi_giao, quan_ly_xuat, nha_xe_id, bien_so, loai_xe_id, status: 'tam', created_by: profile.id,
       }).select().single();
       if (error) { alert('Lỗi tạo phiếu: ' + error.message); submitBtn.disabled = false; submitBtn.textContent = 'Kho ghi nhận tạm'; return; }
 
@@ -316,7 +327,7 @@ export async function render(container, profile, isStale = () => false) {
       categoryOptions: note.status === 'tam' ? categoryOptionsForExtra : null,
       signInfo: `<span>Người giao: <b>${esc(note.nguoi_giao ?? '—')}</b> · QL duyệt: <b>${esc(note.quan_ly_xuat ?? '—')}</b></span>
                  <span>Người nhận: <b>${esc(note.nguoi_nhan ?? '— chưa ký —')}</b></span>
-                 <span>Vận chuyển: <b>${esc(note.nha_xe ?? '—')}</b> · Số xe <b>${esc(note.bien_so ?? '—')}</b> · ${esc(vehicleTypes.find(v => v.id === note.loai_xe_id)?.name ?? '—')}</span>`,
+                 <span>Vận chuyển: <b>${esc(carriers.find(c => c.id === note.nha_xe_id)?.name ?? note.nha_xe ?? '—')}</b> · Số xe <b>${esc(note.bien_so ?? '—')}</b> · ${esc(vehicleTypes.find(v => v.id === note.loai_xe_id)?.name ?? '—')}</span>`,
     });
 
     const dialog = openModal({ title: `Phiếu ${note.code}`, bodyHtml: cardHtml, footerHtml: '', wide: true });
