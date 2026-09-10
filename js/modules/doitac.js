@@ -1,6 +1,6 @@
 // js/modules/doitac.js
 import { supabase } from '../core/config.js';
-import { fmtDate, fmtVND, todayStr } from '../core/utils.js';
+import { fmtDate, fmtVND, todayStr, esc } from '../core/utils.js';
 import { openModal, closeModal } from '../core/modal.js';
 
 export async function render(container, profile, isStale = () => false) {
@@ -12,18 +12,17 @@ export async function render(container, profile, isStale = () => false) {
     <div id="partnerList" class="loading">Đang tải...</div>
   `;
 
-  let categories = [], projects = [];
-  let expanded = {};
+  let categories = [], projects = [], partners = [];
 
   async function loadAll() {
-    const { data: partners, error } = await supabase.from('partners').select('*').order('name');
+    const { data: p, error } = await supabase.from('partners').select('*').order('name');
     if (isStale()) return;
     if (error) { container.querySelector('#partnerList').innerHTML = `<div class="error-box">${error.message}</div>`; return; }
     const { data: proj } = await supabase.from('projects').select('*').order('name');
     const { data: cats } = await supabase.from('categories').select('*').order('name');
     if (isStale()) return;
-    projects = proj ?? []; categories = cats ?? [];
-    renderPartners(partners);
+    partners = p ?? []; projects = proj ?? []; categories = cats ?? [];
+    renderList();
   }
 
   async function getRateTable(partner, project) {
@@ -47,56 +46,77 @@ export async function render(container, profile, isStale = () => false) {
     return rows;
   }
 
-  function renderPartners(partners) {
-    container.querySelector('#partnerList').innerHTML = partners.map(p => {
-      const projs = projects.filter(pr => pr.partner_id === p.id);
-      return `
-      <div class="panel" style="margin-bottom:12px;" data-partner="${p.id}">
-        <div class="panel-body">
-          <div style="display:flex; justify-content:space-between; align-items:flex-start;">
-            <h3 style="color:var(--red-dark); font-size:1.1rem;">${p.name}</h3>
-            <button class="btn small" data-newrate="${p.id}">+ Tạo báo giá</button>
-          </div>
-          <div style="font-size:.8rem; color:var(--ink-soft); margin:6px 0 10px; line-height:1.7;">
-            Địa chỉ: ${p.address ?? '—'}<br>MST: ${p.mst ?? '—'}<br>
-            Hợp đồng: ${p.hop_dong_so ?? '—'} ${p.hop_dong_ngay ? '— ký ngày ' + fmtDate(p.hop_dong_ngay) : ''}<br>
-            Kỳ chốt bill: ngày ${p.billing_cutoff_day} hằng tháng
-          </div>
-          <div class="chips">
-            <span class="badge tam" style="cursor:pointer;" data-price="${p.id}:default">📋 Bảng giá mặc định</span>
-            ${projs.map(pr => `<span class="badge tam" style="cursor:pointer; margin-left:6px;" data-price="${p.id}:${pr.id}">${pr.name}</span>`).join('')}
-          </div>
-          <div id="price-${p.id}"></div>
-        </div>
-      </div>`;
-    }).join('') || '<div class="empty-state">Chưa có đối tác nào — bấm "Tạo đối tác mới" ở trên.</div>';
+  // ================= LIST =================
+  function renderList() {
+    const rows = partners.map(p => {
+      const numProjects = projects.filter(pr => pr.partner_id === p.id).length;
+      return `<tr data-open-partner="${p.id}" style="cursor:pointer;">
+        <td><b style="color:var(--red-dark);">${esc(p.name)}</b></td>
+        <td>${esc(p.mst ?? '—')}</td>
+        <td class="num">${numProjects}</td>
+        <td>Ngày ${p.billing_cutoff_day} hằng tháng</td>
+      </tr>`;
+    }).join('');
 
-    container.querySelectorAll('[data-price]').forEach(chip => {
+    container.querySelector('#partnerList').innerHTML = `
+      <div class="panel"><div class="panel-body" style="padding:0">
+        <table>
+          <thead><tr><th>Tên công ty</th><th>MST</th><th class="num">Số dự án</th><th>Kỳ chốt bill</th></tr></thead>
+          <tbody>${rows || '<tr><td colspan="4" class="empty-state">Chưa có đối tác nào — bấm "Tạo đối tác mới" ở trên.</td></tr>'}</tbody>
+        </table>
+      </div></div>`;
+
+    container.querySelectorAll('[data-open-partner]').forEach(tr => {
+      tr.addEventListener('click', () => openDetailModal(partners.find(p => p.id === tr.dataset.openPartner)));
+    });
+  }
+
+  // ================= MODAL CHI TIẾT =================
+  function openDetailModal(partner) {
+    const projs = projects.filter(pr => pr.partner_id === partner.id);
+
+    const bodyHtml = `
+      <div style="font-size:.85rem; color:var(--ink-soft); line-height:1.8; margin-bottom:16px;">
+        Địa chỉ: ${esc(partner.address ?? '—')}<br>
+        MST: ${esc(partner.mst ?? '—')}<br>
+        Hợp đồng: ${esc(partner.hop_dong_so ?? '—')} ${partner.hop_dong_ngay ? '— ký ngày ' + fmtDate(partner.hop_dong_ngay) : ''}<br>
+        Kỳ chốt bill: ngày ${partner.billing_cutoff_day} hằng tháng
+      </div>
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+        <b>Dự án &amp; bảng giá</b>
+        <button class="btn small" id="dNewRate">+ Tạo báo giá</button>
+      </div>
+      <div class="chips" style="margin-bottom:8px;">
+        <span class="badge tam" style="cursor:pointer;" data-price="default">📋 Bảng giá mặc định</span>
+        ${projs.map(pr => `<span class="badge tam" style="cursor:pointer; margin-left:6px;" data-price="${pr.id}">${esc(pr.name)}</span>`).join('')}
+      </div>
+      <div id="priceArea"></div>
+    `;
+
+    const dialog = openModal({ title: partner.name, bodyHtml, footerHtml: '', wide: true });
+
+    dialog.querySelectorAll('[data-price]').forEach(chip => {
       chip.addEventListener('click', async () => {
-        const [partnerId, key] = chip.dataset.price.split(':');
-        expanded[partnerId] = expanded[partnerId] === key ? null : key;
-        const area = container.querySelector(`#price-${partnerId}`);
-        if (!expanded[partnerId]) { area.innerHTML = ''; return; }
+        const key = chip.dataset.price;
+        const area = dialog.querySelector('#priceArea');
         area.innerHTML = '<div class="loading">Đang tải bảng giá...</div>';
 
-        const partner = partners.find(x => x.id === partnerId);
-        const project = key === 'default' ? null : projects.find(x => x.id === key);
+        const project = key === 'default' ? null : projs.find(x => x.id === key);
         const rows = await getRateTable(partner, project);
 
         area.innerHTML = `<table style="margin-top:10px;">
           <thead><tr><th>Chủng loại</th><th>ĐVT</th><th class="num">Đơn giá/ngày</th></tr></thead>
-          <tbody>${rows.map(r => `<tr><td>${r.name}</td><td>${r.unit}</td>
+          <tbody>${rows.map(r => `<tr><td>${esc(r.name)}</td><td>${esc(r.unit)}</td>
             <td class="num" style="${r.isOverride ? 'color:var(--red-dark);font-weight:600;' : ''}">${r.rate != null ? fmtVND(r.rate) + (r.isOverride ? ' *' : '') : '— chưa có giá —'}</td></tr>`).join('')}</tbody>
         </table>
         ${rows.some(r => r.isOverride) ? '<div class="note-box" style="margin-top:8px;">* Đơn giá riêng cho dự án này, khác giá khung mặc định.</div>' : ''}`;
       });
     });
 
-    container.querySelectorAll('[data-newrate]').forEach(btn => {
-      btn.addEventListener('click', () => openRateModal(btn.dataset.newrate, partners));
-    });
+    dialog.querySelector('#dNewRate').addEventListener('click', () => openRateModal(partner));
   }
 
+  // ================= TẠO ĐỐI TÁC MỚI =================
   function openNewPartnerModal() {
     const bodyHtml = `
       <div class="field"><label>Tên công ty</label><input type="text" id="pName" placeholder="CÔNG TY ..."></div>
@@ -131,15 +151,15 @@ export async function render(container, profile, isStale = () => false) {
     });
   }
 
-  function openRateModal(partnerId, partners) {
-    const partner = partners.find(p => p.id === partnerId);
+  // ================= TẠO BÁO GIÁ =================
+  function openRateModal(partner) {
     const bodyHtml = `
-      <div class="info-box">Bảng giá mặc định (giá khung) áp dụng cho toàn bộ dự án của <b>${partner.name}</b>, trừ khi dự án có đơn giá riêng ghi đè. Chỉ điền chủng loại nào cần đặt/đổi giá, để trống các dòng còn lại.</div>
+      <div class="info-box">Bảng giá mặc định (giá khung) áp dụng cho toàn bộ dự án của <b>${esc(partner.name)}</b>, trừ khi dự án có đơn giá riêng ghi đè. Chỉ điền chủng loại nào cần đặt/đổi giá, để trống các dòng còn lại.</div>
       <div class="field"><label>Ngày hiệu lực</label><input type="date" id="rDate" value="${todayStr()}"></div>
       <div style="max-height:320px; overflow-y:auto; border:1px solid var(--line); border-radius:6px;">
         <table>
           <thead><tr><th>Chủng loại</th><th>ĐVT</th><th class="num" style="width:140px;">Đơn giá/ngày</th></tr></thead>
-          <tbody>${categories.map(c => `<tr><td>${c.name}</td><td>${c.unit}</td>
+          <tbody>${categories.map(c => `<tr><td>${esc(c.name)}</td><td>${esc(c.unit)}</td>
             <td><input type="number" data-rate-cat="${c.id}" placeholder="—" style="width:120px;"></td></tr>`).join('')}</tbody>
         </table>
       </div>
@@ -155,7 +175,7 @@ export async function render(container, profile, isStale = () => false) {
       inputs.forEach(inp => {
         const val = parseFloat(inp.value);
         if (!isNaN(val) && val > 0) {
-          rows.push({ partner_id: partnerId, category_id: inp.dataset.rateCat, daily_rate: val, effective_from, reason: 'Báo giá thiết lập qua giao diện' });
+          rows.push({ partner_id: partner.id, category_id: inp.dataset.rateCat, daily_rate: val, effective_from, reason: 'Báo giá thiết lập qua giao diện' });
         }
       });
       if (rows.length === 0) { alert('Nhập ít nhất 1 đơn giá.'); return; }
