@@ -22,9 +22,14 @@ export async function render(container, profile, isStale = () => false) {
       <div class="panel-body" style="padding:0"><table id="catTable"><tbody><tr><td class="loading">Đang tải...</td></tr></tbody></table></div>
     </div>
 
-    <div class="panel">
+    <div class="panel" style="margin-bottom:18px;">
       <div class="panel-head"><h3>Loại xe vận chuyển</h3><button class="btn small" id="btnNewVehicle">+ Thêm loại xe</button></div>
       <div class="panel-body" style="padding:0"><table id="vehicleTable"><tbody><tr><td class="loading">Đang tải...</td></tr></tbody></table></div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><h3>Đơn vị vận chuyển (nhà xe)</h3><button class="btn small" id="btnNewCarrier">+ Thêm đơn vị vận chuyển</button></div>
+      <div class="panel-body" style="padding:0"><table id="carrierTable"><tbody><tr><td class="loading">Đang tải...</td></tr></tbody></table></div>
     </div>
   `;
 
@@ -122,9 +127,46 @@ export async function render(container, profile, isStale = () => false) {
     });
   }
 
+  async function loadCarriers() {
+    const { data, error } = await supabase.from('transport_carriers').select('*').order('name');
+    if (isStale()) return;
+    const table = container.querySelector('#carrierTable');
+    if (error) { table.innerHTML = `<tr><td class="error-box">${error.message}</td></tr>`; return; }
+
+    const rows = (data ?? []).map(c => `<tr><td>${c.name}</td>
+      <td><button class="btn secondary small" data-del-carrier="${c.id}">Xóa</button></td></tr>`).join('');
+    table.innerHTML = `<thead><tr><th>Đơn vị vận chuyển</th><th></th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="2" class="empty-state">Chưa có đơn vị vận chuyển nào</td></tr>'}</tbody>`;
+
+    table.querySelectorAll('[data-del-carrier]').forEach(btn =>
+      btn.addEventListener('click', async () => {
+        if (!confirm('Xóa đơn vị vận chuyển này?')) return;
+        await supabase.from('transport_carriers').delete().eq('id', btn.dataset.delCarrier);
+        loadCarriers();
+      }));
+  }
+
+  function openCarrierModal() {
+    const bodyHtml = `<div class="field"><label>Tên đơn vị vận chuyển</label><input type="text" id="crName" placeholder="VD: Tân Thịnh"></div>`;
+    const footerHtml = `<button class="btn secondary" id="crCancel">Hủy</button><button class="btn" id="crSubmit">Thêm</button>`;
+    const dialog = openModal({ title: 'Thêm đơn vị vận chuyển', bodyHtml, footerHtml });
+
+    dialog.querySelector('#crCancel').addEventListener('click', closeModal);
+    dialog.querySelector('#crSubmit').addEventListener('click', async () => {
+      const name = dialog.querySelector('#crName').value.trim();
+      if (!name) { alert('Nhập tên đơn vị vận chuyển.'); return; }
+      const { error } = await supabase.from('transport_carriers').insert({ name });
+      if (error) { alert('Lỗi lưu: ' + error.message); return; }
+      closeModal();
+      loadCarriers();
+    });
+  }
+
   container.querySelector('#btnNewCat').addEventListener('click', () => openCatModal(null));
   container.querySelector('#btnNewVehicle').addEventListener('click', openVehicleModal);
+  container.querySelector('#btnNewCarrier').addEventListener('click', openCarrierModal);
 
   await loadCategories();
   await loadVehicleTypes();
+  await loadCarriers();
 }
