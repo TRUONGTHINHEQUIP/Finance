@@ -354,7 +354,9 @@ export async function render(container, profile, isStale = () => false) {
       .select('*, transfer_note_items(*)')
       .order('created_at', { ascending: false })
       .limit(50);
-    if (filterProject) q = q.eq('project_id', filterProject);
+    if (filterProject) {
+      q = q.or(`and(from_location_type.eq.du_an,from_location_id.eq.${filterProject}),and(to_location_type.eq.du_an,to_location_id.eq.${filterProject}),project_id.eq.${filterProject}`);
+    }
 
     const { data: notes, error } = await q;
     if (isStale()) return;
