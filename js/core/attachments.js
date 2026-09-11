@@ -42,7 +42,7 @@ export async function renderAttachmentRow(transferNoteId) {
   const chips = (!error && data ? data : []).map(a => {
     const icon = a.file_type === 'pdf_scan' ? '📎' : '📷';
     const label = a.file_type === 'pdf_scan' ? 'Phiếu ký (scan)' : 'Ảnh giao nhận';
-    return `<a class="attach-chip" href="${WORKER_URL}/${a.r2_key}" target="_blank" rel="noopener">${icon} ${label}</a>`;
+    return `<span class="attach-chip" data-view-key="${a.r2_key}">${icon} ${label}</span>`;
   });
 
   return `<div class="attach-row">
@@ -53,7 +53,30 @@ export async function renderAttachmentRow(transferNoteId) {
   </div>`;
 }
 
+// Xem file — KHÔNG dùng link <a href> thường vì trình duyệt không gửi kèm thông
+// tin đăng nhập khi mở link trực tiếp. Phải tự tải file kèm token rồi mới mở ra,
+// để Worker xác nhận đúng người trong công ty mới xem được.
+async function viewAttachment(key) {
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session) { alert('Phiên đăng nhập đã hết, tải lại trang và đăng nhập lại.'); return; }
+
+  try {
+    const res = await fetch(`${WORKER_URL}/${key}`, {
+      headers: { Authorization: `Bearer ${session.access_token}` },
+    });
+    if (!res.ok) throw new Error('Không xem được file (' + res.status + ')');
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    window.open(url, '_blank');
+  } catch (err) {
+    alert('Lỗi mở file: ' + err.message);
+  }
+}
+
 export function bindAttachmentEvents(container, uploaderId, onUploaded) {
+  container.querySelectorAll('[data-view-key]').forEach(chip => {
+    chip.addEventListener('click', () => viewAttachment(chip.dataset.viewKey));
+  });
   container.querySelectorAll('[data-upload-input]').forEach(input => {
     input.addEventListener('change', async (e) => {
       const noteId = input.dataset.uploadInput;
