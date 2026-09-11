@@ -81,6 +81,7 @@ export async function render(container, profile, isStale = () => false) {
         <div class="field"><label>Số xe</label><input type="text" id="mBienSo" list="mBienSoList" placeholder="50E-123.45"><datalist id="mBienSoList"></datalist></div>
         <div class="field"><label>Loại xe</label><select id="mLoaiXe"><option value="">— Chọn —</option>${vehicleTypes.map(v => `<option value="${v.id}">${v.name}</option>`).join('')}</select></div>
       </div>
+      <div class="field"><label>Phí vận chuyển (chỉ tính khi Nơi nhập là dự án — nơi nhận hàng sẽ trả phí này)</label><input type="number" id="mTransportFee" placeholder="VD: 5000000"></div>
 
       <div class="field">
         <label>Dòng hàng</label>
@@ -168,6 +169,7 @@ export async function render(container, profile, isStale = () => false) {
       const nha_xe_id = dialog.querySelector('#mNhaXe').value || null;
       const bien_so = dialog.querySelector('#mBienSo').value || null;
       const loai_xe_id = dialog.querySelector('#mLoaiXe').value || null;
+      const transport_fee = parseFloat(dialog.querySelector('#mTransportFee').value) || null;
       const code = dialog.querySelector('#mCode').value.trim();
       if (!code) { alert('Nhập số phiếu theo đúng giấy tại hiện trường.'); return; }
       const files = Array.from(dialog.querySelector('#mFiles').files);
@@ -180,7 +182,7 @@ export async function render(container, profile, isStale = () => false) {
         from_location_type: fromType, from_location_id: fromId,
         to_location_type: toType, to_location_id: toId,
         project_id,
-        nguoi_giao, quan_ly_xuat, nha_xe_id, bien_so, loai_xe_id, status: 'tam', created_by: profile.id,
+        nguoi_giao, quan_ly_xuat, nha_xe_id, bien_so, loai_xe_id, transport_fee, status: 'tam', created_by: profile.id,
       }).select().single();
       if (error) { alert('Lỗi tạo phiếu: ' + error.message); submitBtn.disabled = false; submitBtn.textContent = 'Kho ghi nhận tạm'; return; }
 
@@ -327,7 +329,7 @@ export async function render(container, profile, isStale = () => false) {
       categoryOptions: note.status === 'tam' ? categoryOptionsForExtra : null,
       signInfo: `<span>Người giao: <b>${esc(note.nguoi_giao ?? '—')}</b> · QL duyệt: <b>${esc(note.quan_ly_xuat ?? '—')}</b></span>
                  <span>Người nhận: <b>${esc(note.nguoi_nhan ?? '— chưa ký —')}</b></span>
-                 <span>Vận chuyển: <b>${esc(carriers.find(c => c.id === note.nha_xe_id)?.name ?? note.nha_xe ?? '—')}</b> · Số xe <b>${esc(note.bien_so ?? '—')}</b> · ${esc(vehicleTypes.find(v => v.id === note.loai_xe_id)?.name ?? '—')}</span>`,
+                 <span>Vận chuyển: <b>${esc(carriers.find(c => c.id === note.nha_xe_id)?.name ?? note.nha_xe ?? '—')}</b> · Số xe <b>${esc(note.bien_so ?? '—')}</b> · ${esc(vehicleTypes.find(v => v.id === note.loai_xe_id)?.name ?? '—')}${note.transport_fee ? ` · Phí: <b>${Number(note.transport_fee).toLocaleString('vi-VN')} đ</b>` : ''}</span>`,
     });
 
     const dialog = openModal({ title: `Phiếu ${note.code}`, bodyHtml: cardHtml, footerHtml: '', wide: true });
