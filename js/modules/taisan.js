@@ -22,7 +22,7 @@ export async function render(container, profile, isStale = () => false) {
     <div class="panel"><div class="panel-body" style="padding:0"><table id="assetTable"><tbody><tr><td class="loading">Đang tải...</td></tr></tbody></table></div></div>
   `;
 
-  let allRows = [];
+  let allRows = [], rawAssets = [];
 
   const { data: groups } = await supabase.from('groups').select('*').order('id');
   if (isStale()) return;
@@ -131,7 +131,7 @@ export async function render(container, profile, isStale = () => false) {
   async function loadAssets() {
     const { data: assets, error } = await supabase
       .from('asset_units')
-      .select('status, category_id, categories(name, unit, group_id, ref_value), warehouses:warehouse_id(name), projects:project_id(name)');
+      .select('id, asset_code, status, category_id, warehouse_id, project_id, purchase_date, purchase_value, source_note, categories(name, unit, group_id, ref_value), warehouses:warehouse_id(name), projects:project_id(name)');
 
     if (isStale()) return;
 
@@ -145,11 +145,12 @@ export async function render(container, profile, isStale = () => false) {
       const loc = a.status === 'tai_du_an' ? 'Tại dự án — ' + (a.projects?.name ?? '(?)')
         : a.status === 'kho' ? 'Tại kho — ' + (a.warehouses?.name ?? '(?)')
         : 'Cần bảo trì';
-      const key = a.category_id + '|' + loc;
-      if (!map[key]) map[key] = { category: a.categories, status: a.status, loc, qty: 0 };
+      const key = a.category_id + '|' + a.status + '|' + (a.warehouse_id ?? '') + '|' + (a.project_id ?? '');
+      if (!map[key]) map[key] = { category: a.categories, category_id: a.category_id, status: a.status, warehouse_id: a.warehouse_id, project_id: a.project_id, loc, qty: 0, key };
       map[key].qty += 1;
     });
     allRows = Object.values(map);
+    rawAssets = assets ?? [];
   }
 
   function renderTable() {
@@ -171,7 +172,7 @@ export async function render(container, profile, isStale = () => false) {
       const badge = r.status === 'can_bao_tri' ? '<span class="badge tam">Cần bảo trì</span>'
         : r.status === 'tai_du_an' ? '<span class="badge chinh">Đang thuê</span>'
         : '<span class="badge chinh">Sẵn sàng</span>';
-      return `<tr>
+      return `<tr data-open-row="${r.key}" style="cursor:pointer;">
         <td>${r.category?.group_id ?? ''}</td>
         <td>${r.category?.name ?? '(?)'}</td>
         <td>${r.category?.unit ?? ''}</td>
@@ -187,6 +188,37 @@ export async function render(container, profile, isStale = () => false) {
       <thead><tr><th>Nhóm</th><th>Chủng loại</th><th>ĐVT</th><th class="num">SL</th><th class="num">Đơn giá TS</th><th class="num">Thành tiền</th><th>Vị trí</th><th>Trạng thái</th></tr></thead>
       <tbody>${body || '<tr><td colspan="8" class="empty-state">Chưa có tài sản nào khớp bộ lọc</td></tr>'}</tbody>
       <tfoot><tr><td colspan="5">Tổng giá trị (theo bộ lọc)</td><td class="num">${fmtVND(grandTotal)}</td><td colspan="2"></td></tr></tfoot>`;
+
+    container.querySelectorAll('[data-open-row]').forEach(tr => {
+      tr.addEventListener('click', () => openDetailModal(rows.find(r => r.key === tr.dataset.openRow)));
+    });
+  }
+
+  function openDetailModal(row) {
+    const items = rawAssets.filter(a =>
+      a.category_id === row.category_id && a.status === row.status &&
+      (a.warehouse_id ?? '') === (row.warehouse_id ?? '') && (a.project_id ?? '') === (row.project_id ?? '')
+    );
+
+    const rowsHtml = items.map(a => `<tr>
+      <td>${a.asset_code}</td>
+      <td>${a.purchase_date ? new Date(a.purchase_date).toLocaleDateString('vi-VN') : '—'}</td>
+      <td class="num">${fmtVND(a.purchase_value ?? 0)}</td>
+      <td style="font-size:.78rem; color:var(--ink-soft);">${a.source_note ?? '—'}</td>
+    </tr>`).join('');
+
+    const bodyHtml = `
+      <div style="font-size:.85rem; color:var(--ink-soft); margin-bottom:12px;">
+        ${row.category?.name ?? '(?)'} · ${row.loc} · ${items.length} đơn vị
+      </div>
+      <div style="max-height:400px; overflow-y:auto;">
+        <table>
+          <thead><tr><th>Mã tài sản</th><th>Ngày mua/nhập</th><th class="num">Giá trị mua</th><th>Nguồn gốc</th></tr></thead>
+          <tbody>${rowsHtml || '<tr><td colspan="4" class="empty-state">Không có dữ liệu</td></tr>'}</tbody>
+        </table>
+      </div>
+    `;
+    openModal({ title: `Chi tiết tài sản — ${row.category?.name ?? ''}`, bodyHtml, footerHtml: '', wide: true });
   }
 
   ['filterGroup', 'filterStatus', 'filterText'].forEach(id =>
