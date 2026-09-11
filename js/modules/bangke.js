@@ -4,6 +4,12 @@ import { openModal } from '../core/modal.js';
 import { fmtVND, fmtDate, todayStr, addDaysStr, esc } from '../core/utils.js';
 import { computeStatement, saveStatement } from '../core/billing.js';
 
+function sourceTypeLabel(type) {
+  if (type === 'ton_dau_ky') return 'TỒN ĐẦU KỲ';
+  if (type === 'giam_trong_ky') return 'Rời đi trong kỳ';
+  return 'Phát Sinh Thuê';
+}
+
 export async function render(container, profile, isStale = () => false) {
   container.innerHTML = `
     <div class="page-head">
@@ -56,9 +62,9 @@ export async function render(container, profile, isStale = () => false) {
     const vat = computed.rentalSubtotal * (vatRate / 100);
     const total = computed.rentalSubtotal + vat;
 
-    const rows = computed.lines.map(l => `<tr>
+    const rows = computed.lines.map(l => `<tr${l.source_type === 'giam_trong_ky' ? ' style="color:var(--red-dark);"' : ''}>
       <td>${fmtDate(l.ngay)}</td>
-      <td>${l.source_type === 'ton_dau_ky' ? 'TỒN ĐẦU KỲ' : 'Phát Sinh Thuê'}</td>
+      <td>${sourceTypeLabel(l.source_type)}</td>
       <td>${catName(l.category_id)}</td>
       <td class="num">${l.so_ngay}</td><td class="num">${l.so_luong}</td>
       <td class="num">${fmtVND(l.don_gia)}</td><td class="num">${fmtVND(l.thanh_tien)}</td>
@@ -124,9 +130,9 @@ export async function render(container, profile, isStale = () => false) {
       .select('*').eq('statement_id', statement.id).order('ngay');
     if (error) { alert('Lỗi tải chi tiết: ' + error.message); return; }
 
-    const rows = (lines ?? []).map(l => `<tr>
+    const rows = (lines ?? []).map(l => `<tr${l.source_type === 'giam_trong_ky' ? ' style="color:var(--red-dark);"' : ''}>
       <td>${fmtDate(l.ngay)}</td>
-      <td>${l.source_type === 'ton_dau_ky' ? 'TỒN ĐẦU KỲ' : 'Phát Sinh Thuê'}</td>
+      <td>${sourceTypeLabel(l.source_type)}</td>
       <td>${esc(catName(l.category_id))}</td>
       <td class="num">${l.so_ngay}</td><td class="num">${l.so_luong}</td>
       <td class="num">${fmtVND(l.don_gia)}</td><td class="num">${fmtVND(l.thanh_tien)}</td>
