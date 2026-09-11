@@ -10,6 +10,9 @@
 // Cách tính: mỗi sự kiện (đến/đi) đóng góp ± số lượng × số ngày còn lại tới hết kỳ.
 // Cộng tất cả đóng góp lại cho ra đúng số tiền thực tế theo từng khoảng thời gian
 // tài sản thực sự có mặt tại dự án — không cần dựng lịch trình từng ngày.
+//
+// Vận chuyển: phí gắn trực tiếp trên phiếu (transfer_notes.transport_fee),
+// tự động tính cho dự án là NƠI NHẬN (nơi đến) — vì nơi nhận hàng là bên trả phí.
 
 import { supabase } from './config.js';
 import { daysBetween } from './utils.js';
@@ -19,7 +22,7 @@ export async function computeStatement(projectId, periodStart, periodEnd) {
 
   const { data: arrivals, error: arrErr } = await supabase
     .from('transfer_notes')
-    .select('id, ngay_ky, code, transfer_note_items(category_id, sl_xuat, sl_thuc_nhan)')
+    .select('id, ngay_ky, code, transport_fee, transfer_note_items(category_id, sl_xuat, sl_thuc_nhan)')
     .eq('to_location_type', 'du_an').eq('to_location_id', projectId)
     .eq('status', 'chinh_thuc').lte('ngay_ky', periodEnd);
   if (arrErr) throw arrErr;
@@ -84,11 +87,18 @@ export async function computeStatement(projectId, periodStart, periodEnd) {
     }
   }
 
-  return { periodStart, periodEnd, periodDays, lines, rentalSubtotal };
+  // Vận chuyển — cộng phí của các phiếu ký TRONG kỳ có Nơi nhận là đúng dự án này
+  const transportItems = (arrivals ?? [])
+    .filter(n => n.transport_fee && n.ngay_ky >= periodStart && n.ngay_ky <= periodEnd)
+    .map(n => ({ ngay: n.ngay_ky, code: n.code, amount: Number(n.transport_fee) }));
+  const transportSubtotal = transportItems.reduce((s, t) => s + t.amount, 0);
+
+  return { periodStart, periodEnd, periodDays, lines, rentalSubtotal, transportItems, transportSubtotal };
 }
 
-export async function saveStatement(billingPeriodId, projectId, computed, transportSubtotal = 0, vatRate = 8) {
-  const tongPhatSinh = computed.rentalSubtotal + transportSubtotal;
+export async function saveStatement(billingPeriodId, projectId, computed, vatRate = 8, adjustment = null, close = false) {
+  const adjustmentAmount = adjustment?.amount ?? 0;
+  const tongPhatSinh = computed.rentalSubtotal + computed.transportSubtotal + adjustmentAmount;
   const vatAmount = tongPhatSinh * (vatRate / 100);
   const total = tongPhatSinh + vatAmount;
 
@@ -96,11 +106,15 @@ export async function saveStatement(billingPeriodId, projectId, computed, transp
     billing_period_id: billingPeriodId,
     project_id: projectId,
     rental_subtotal: computed.rentalSubtotal,
-    transport_subtotal: transportSubtotal,
+    transport_subtotal: computed.transportSubtotal,
+    adjustment_note: adjustment?.note ?? null,
+    adjustment_amount: adjustmentAmount,
     tong_phat_sinh: tongPhatSinh,
     vat_rate: vatRate,
     vat_amount: vatAmount,
     total,
+    status: close ? 'closed' : 'draft',
+    closed_at: close ? new Date().toISOString() : null,
   }).select().single();
   if (error) throw error;
 
@@ -109,4 +123,15 @@ export async function saveStatement(billingPeriodId, projectId, computed, transp
   if (linesError) throw linesError;
 
   return statement;
+}
+
+// Kiểm tra xem dự án này trong khoảng thời gian này đã có bảng kê CHỐT rồi hay chưa —
+// dùng để cảnh báo trước khi tính lại, tránh chốt trùng.
+export async function findClosedStatement(projectId, periodStart, periodEnd) {
+  const { data } = await supabase.from('billing_statements')
+    .select('*, billing_periods!inner(period_start, period_end)')
+    .eq('project_id', projectId).eq('status', 'closed')
+    .eq('billing_periods.period_start', periodStart).eq('billing_periods.period_end', periodEnd)
+    .maybeSingle();
+  return data ?? null;
 }
