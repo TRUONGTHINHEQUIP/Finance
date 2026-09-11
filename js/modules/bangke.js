@@ -2,7 +2,7 @@
 import { supabase } from '../core/config.js';
 import { openModal } from '../core/modal.js';
 import { fmtVND, fmtDate, todayStr, addDaysStr, esc } from '../core/utils.js';
-import { computeStatement, saveStatement } from '../core/billing.js';
+import { computeStatement, saveStatement, findClosedStatement } from '../core/billing.js';
 
 function sourceTypeLabel(type) {
   if (type === 'ton_dau_ky') return 'TỒN ĐẦU KỲ';
@@ -53,16 +53,20 @@ export async function render(container, profile, isStale = () => false) {
     const output = container.querySelector('#bkOutput');
     output.innerHTML = '<div class="loading">Đang tính...</div>';
 
+    const already = await findClosedStatement(projectId, from, to);
+    if (already) {
+      output.innerHTML = `<div class="error-box">Kỳ này đã CHỐT trước đó (${fmtDate(already.closed_at)}) — không tính/chốt lại được. Nếu phát hiện sai lệch, dùng "Tạo dòng điều chỉnh" cho kỳ hiện tại đang mở thay vì sửa lại kỳ này.</div>`;
+      return;
+    }
+
     let computed;
     try { computed = await computeStatement(projectId, from, to); }
     catch (e) { output.innerHTML = `<div class="error-box">Lỗi tính bảng kê: ${e.message}</div>`; return; }
 
     const project = projects.find(p => p.id === projectId);
     const vatRate = 8;
-    const vat = computed.rentalSubtotal * (vatRate / 100);
-    const total = computed.rentalSubtotal + vat;
 
-    const rows = computed.lines.map(l => `<tr${l.source_type === 'giam_trong_ky' ? ' style="color:var(--red-dark);"' : ''}>
+    const rentalRows = computed.lines.map(l => `<tr${l.source_type === 'giam_trong_ky' ? ' style="color:var(--red-dark);"' : ''}>
       <td>${fmtDate(l.ngay)}</td>
       <td>${sourceTypeLabel(l.source_type)}</td>
       <td>${catName(l.category_id)}</td>
@@ -70,23 +74,59 @@ export async function render(container, profile, isStale = () => false) {
       <td class="num">${fmtVND(l.don_gia)}</td><td class="num">${fmtVND(l.thanh_tien)}</td>
     </tr>`).join('') || '<tr><td colspan="7" class="empty-state">Không có phiếu chính thức nào trong khoảng thời gian này</td></tr>';
 
+    const transportRows = computed.transportItems.map(t => `<tr>
+      <td>${fmtDate(t.ngay)}</td><td colspan="5">Chuyến xe theo phiếu ${t.code}</td><td class="num">${fmtVND(t.amount)}</td>
+    </tr>`).join('');
+
     output.innerHTML = `
       <div class="panel"><div class="panel-body">
         <h2 style="text-align:center;">BẢNG KÊ GIÁ TRỊ — THUÊ ĐỊNH KỲ</h2>
         <div style="text-align:center; font-weight:600; margin:8px 0 14px;">Dự án: ${project?.name ?? ''} · Từ ${fmtDate(from)} đến ${fmtDate(to)}</div>
         <table><thead><tr><th>Ngày ký</th><th>Diễn giải</th><th>Chủng loại</th><th class="num">Số ngày</th><th class="num">SL</th><th class="num">Đơn giá</th><th class="num">Thành tiền</th></tr></thead>
-          <tbody>${rows}</tbody></table>
-        <table style="margin-top:10px;">
-          <tr><td style="border:none;width:70%"></td><td style="border:none;">Tiền thuê</td><td class="num" style="border:none;">${fmtVND(computed.rentalSubtotal)}</td></tr>
-          <tr><td style="border:none;"></td><td style="border:none;">VAT (${vatRate}%)</td><td class="num" style="border:none;">${fmtVND(vat)}</td></tr>
-          <tr><td style="border:none;"></td><td style="border:none;font-weight:700;color:var(--red-dark);">Tổng thanh toán</td><td class="num" style="border:none;font-weight:700;color:var(--red-dark);">${fmtVND(total)}</td></tr>
-        </table>
+          <tbody>${rentalRows}</tbody></table>
+        ${computed.transportItems.length ? `
+        <div style="font-weight:600; margin-top:14px; color:var(--red-dark);">Vận chuyển</div>
+        <table><tbody>${transportRows}</tbody></table>` : ''}
+
+        <div class="field" style="margin-top:16px;">
+          <label>Điều chỉnh thêm (giảm giá, hoàn tiền... nhập số âm nếu giảm trừ) — để trống nếu không có</label>
+          <div class="field-row">
+            <input type="text" id="bkAdjNote" placeholder="Lý do điều chỉnh">
+            <input type="number" id="bkAdjAmount" placeholder="Số tiền (VD: -500000)">
+          </div>
+        </div>
+
+        <table style="margin-top:10px;" id="bkTotalsTable"></table>
+
         <div class="note-box">Đây là bảng kê giá trị (không phải hóa đơn điện tử) — dùng làm căn cứ để Sale xuất hóa đơn thật và BGD xem thống kê.</div>
-        <button class="btn small" id="bkSave">Lưu vào lịch sử</button>
+        <div style="display:flex; gap:10px;">
+          <button class="btn secondary" id="bkSaveDraft">Lưu nháp</button>
+          <button class="btn" id="bkClose">Chốt kỳ</button>
+        </div>
       </div></div>`;
 
-    container.querySelector('#bkSave').addEventListener('click', async () => {
+    function renderTotals() {
+      const adjAmount = parseFloat(container.querySelector('#bkAdjAmount').value) || 0;
+      const tongPhatSinh = computed.rentalSubtotal + computed.transportSubtotal + adjAmount;
+      const vat = tongPhatSinh * (vatRate / 100);
+      const total = tongPhatSinh + vat;
+      container.querySelector('#bkTotalsTable').innerHTML = `
+        <tr><td style="border:none;width:70%"></td><td style="border:none;">Tiền thuê</td><td class="num" style="border:none;">${fmtVND(computed.rentalSubtotal)}</td></tr>
+        ${computed.transportSubtotal ? `<tr><td style="border:none;"></td><td style="border:none;">Vận chuyển</td><td class="num" style="border:none;">${fmtVND(computed.transportSubtotal)}</td></tr>` : ''}
+        ${adjAmount ? `<tr><td style="border:none;"></td><td style="border:none;">Điều chỉnh</td><td class="num" style="border:none;">${fmtVND(adjAmount)}</td></tr>` : ''}
+        <tr><td style="border:none;"></td><td style="border:none;">VAT (${vatRate}%)</td><td class="num" style="border:none;">${fmtVND(vat)}</td></tr>
+        <tr><td style="border:none;"></td><td style="border:none;font-weight:700;color:var(--red-dark);">Tổng thanh toán</td><td class="num" style="border:none;font-weight:700;color:var(--red-dark);">${fmtVND(total)}</td></tr>
+      `;
+    }
+    renderTotals();
+    container.querySelector('#bkAdjAmount').addEventListener('input', renderTotals);
+
+    async function doSave(close) {
       try {
+        const adjNote = container.querySelector('#bkAdjNote').value.trim() || null;
+        const adjAmount = parseFloat(container.querySelector('#bkAdjAmount').value) || 0;
+        const adjustment = adjAmount !== 0 ? { note: adjNote, amount: adjAmount } : null;
+
         const partnerId = project.partner_id;
         let { data: period } = await supabase.from('billing_periods')
           .select('*').eq('partner_id', partnerId).eq('period_start', from).eq('period_end', to).maybeSingle();
@@ -96,10 +136,17 @@ export async function render(container, profile, isStale = () => false) {
           if (error) throw error;
           period = newPeriod;
         }
-        await saveStatement(period.id, projectId, computed, 0, vatRate);
-        alert('Đã lưu bảng kê.');
+        await saveStatement(period.id, projectId, computed, vatRate, adjustment, close);
+        alert(close ? 'Đã chốt kỳ — không sửa/tính lại được nữa, mọi sai lệch sau này xử lý bằng dòng điều chỉnh.' : 'Đã lưu nháp.');
         loadHistory();
       } catch (e) { alert('Lỗi lưu bảng kê: ' + e.message); }
+    }
+
+    container.querySelector('#bkSaveDraft').addEventListener('click', () => doSave(false));
+    container.querySelector('#bkClose').addEventListener('click', () => {
+      if (confirm('Chốt kỳ nghĩa là số liệu này đã được khách hàng xác nhận và xuất hóa đơn — không sửa/tính lại được nữa. Chắc chắn chốt?')) {
+        doSave(true);
+      }
     });
   }
 
@@ -113,12 +160,13 @@ export async function render(container, profile, isStale = () => false) {
     const rows = (data ?? []).map(s => `<tr data-open-stmt="${s.id}" style="cursor:pointer;">
       <td><b style="color:var(--red-dark);">${esc(s.projects?.name ?? '(?)')}</b></td>
       <td class="num">${fmtVND(s.tong_phat_sinh)}</td><td class="num">${fmtVND(s.vat_amount)}</td><td class="num">${fmtVND(s.total)}</td>
+      <td>${s.status === 'closed' ? '<span class="badge chinh">Đã chốt</span>' : '<span class="badge tam">Nháp</span>'}</td>
       <td><span class="badge ${s.cong_no_status === 'da_thu' ? 'chinh' : s.cong_no_status === 'qua_han' ? 'tre' : 'tam'}">${s.cong_no_status.replace('_', ' ')}</span></td>
       <td>${fmtDate(s.created_at)}</td>
     </tr>`).join('');
 
-    table.innerHTML = `<thead><tr><th>Dự án</th><th class="num">Tổng phát sinh</th><th class="num">VAT</th><th class="num">Tổng thanh toán</th><th>Công nợ</th><th>Ngày tạo</th></tr></thead>
-      <tbody>${rows || '<tr><td colspan="6" class="empty-state">Chưa có bảng kê nào được lưu</td></tr>'}</tbody>`;
+    table.innerHTML = `<thead><tr><th>Dự án</th><th class="num">Tổng phát sinh</th><th class="num">VAT</th><th class="num">Tổng thanh toán</th><th>Trạng thái</th><th>Công nợ</th><th>Ngày tạo</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="7" class="empty-state">Chưa có bảng kê nào được lưu</td></tr>'}</tbody>`;
 
     table.querySelectorAll('[data-open-stmt]').forEach(tr => {
       tr.addEventListener('click', () => openStatementDetail((data ?? []).find(s => s.id === tr.dataset.openStmt)));
@@ -139,10 +187,13 @@ export async function render(container, profile, isStale = () => false) {
     </tr>`).join('') || '<tr><td colspan="7" class="empty-state">Không có dòng chi tiết</td></tr>';
 
     const bodyHtml = `
+      <div style="margin-bottom:10px;">${statement.status === 'closed' ? '<span class="badge chinh">Đã chốt</span>' : '<span class="badge tam">Nháp</span>'}</div>
       <table><thead><tr><th>Ngày ký</th><th>Diễn giải</th><th>Chủng loại</th><th class="num">Số ngày</th><th class="num">SL</th><th class="num">Đơn giá</th><th class="num">Thành tiền</th></tr></thead>
         <tbody>${rows}</tbody></table>
       <table style="margin-top:10px;">
         <tr><td style="border:none;width:70%"></td><td style="border:none;">Tiền thuê</td><td class="num" style="border:none;">${fmtVND(statement.rental_subtotal)}</td></tr>
+        ${statement.transport_subtotal ? `<tr><td style="border:none;"></td><td style="border:none;">Vận chuyển</td><td class="num" style="border:none;">${fmtVND(statement.transport_subtotal)}</td></tr>` : ''}
+        ${statement.adjustment_amount ? `<tr><td style="border:none;"></td><td style="border:none;">Điều chỉnh${statement.adjustment_note ? ' — ' + esc(statement.adjustment_note) : ''}</td><td class="num" style="border:none;">${fmtVND(statement.adjustment_amount)}</td></tr>` : ''}
         <tr><td style="border:none;"></td><td style="border:none;">VAT (${statement.vat_rate}%)</td><td class="num" style="border:none;">${fmtVND(statement.vat_amount)}</td></tr>
         <tr><td style="border:none;"></td><td style="border:none;font-weight:700;color:var(--red-dark);">Tổng thanh toán</td><td class="num" style="border:none;font-weight:700;color:var(--red-dark);">${fmtVND(statement.total)}</td></tr>
       </table>
