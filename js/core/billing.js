@@ -127,6 +127,32 @@ export async function saveStatement(billingPeriodId, projectId, computed, vatRat
 
 // Kiểm tra xem dự án này trong khoảng thời gian này đã có bảng kê CHỐT rồi hay chưa —
 // dùng để cảnh báo trước khi tính lại, tránh chốt trùng.
+// Lấy các dòng điều chỉnh đang CHỜ (chưa gom vào bill nào) của 1 dự án —
+// tự động áp dụng vào lần tính bill kế tiếp, bất kể được tạo lúc nào trước đó.
+export async function getPendingAdjustments(projectId) {
+  const { data, error } = await supabase.from('billing_adjustments')
+    .select('*').eq('project_id', projectId).eq('applied', false).order('created_at');
+  if (error) throw error;
+  return data ?? [];
+}
+
+// Đánh dấu các dòng điều chỉnh đã được gom vào 1 bill cụ thể — không bị tính lại ở bill sau.
+export async function markAdjustmentsApplied(adjustmentIds, statementId) {
+  if (adjustmentIds.length === 0) return;
+  const { error } = await supabase.from('billing_adjustments')
+    .update({ applied: true, statement_id: statementId })
+    .in('id', adjustmentIds);
+  if (error) throw error;
+}
+
+// Tạo 1 dòng điều chỉnh mới — dùng ngay khi phát hiện sai lệch, không cần chờ tới lúc tính bill.
+export async function createAdjustment(projectId, reason, amount, createdBy) {
+  const { error } = await supabase.from('billing_adjustments').insert({
+    project_id: projectId, reason, amount, created_by: createdBy, applied: false,
+  });
+  if (error) throw error;
+}
+
 export async function findClosedStatement(projectId, periodStart, periodEnd) {
   const { data } = await supabase.from('billing_statements')
     .select('*, billing_periods!inner(period_start, period_end)')
