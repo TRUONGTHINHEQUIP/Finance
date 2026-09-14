@@ -1,6 +1,6 @@
 // js/core/shell.js
 // Topbar + sidebar (nhóm mục) + hash routing. main.js chỉ cần gọi initShell(profile).
-// Mỗi module trong js/modules/ export 1 hàm render(container, profile) duy nhất.
+// Mỗi module trong js/modules/ export 1 hàm render(container, profile, isStale) duy nhất.
 
 import { roleLabel, signOut } from './auth.js';
 
@@ -33,8 +33,10 @@ function allRoutes() {
   return ROUTE_GROUPS.flatMap(g => g.routes);
 }
 
+// Bỏ phần tham số sau dấu "?" (nếu có, VD "giaonhan?note=xxx") trước khi so khớp route —
+// để link chia sẻ kèm tham số vẫn nhận đúng trang, không bị coi là route lạ.
 function currentRouteKey() {
-  const hash = window.location.hash.replace(/^#\/?/, '');
+  const hash = window.location.hash.replace(/^#\/?/, '').split('?')[0];
   return allRoutes().some(r => r.key === hash) ? hash : '';
 }
 
@@ -80,10 +82,10 @@ async function loadRoute(profile) {
 
   try {
     const mod = await import(`../modules/${route.module}.js`);
-    if (isStale()) return; // đã chuyển sang trang khác trong lúc chờ import module
+    if (isStale()) return;
     await mod.render(content, profile, isStale);
   } catch (err) {
-    if (isStale()) return; // đã chuyển trang, không cần báo lỗi nữa
+    if (isStale()) return;
     console.error(err);
     content.innerHTML = `<div class="error-box">Lỗi tải trang "${route.label}": ${err.message}</div>`;
   }
