@@ -16,11 +16,13 @@ export async function render(container, profile, isStale = () => false) {
     <div id="phieuList" class="loading">Đang tải...</div>
   `;
 
-  const { data: c } = await supabase.from('categories').select('*').order('name');
-  const { data: p } = await supabase.from('projects').select('*').eq('status', 'active').order('name');
-  const { data: w } = await supabase.from('warehouses').select('*').order('name');
-  const { data: vt } = await supabase.from('vehicle_types').select('*').order('name');
-  const { data: tc } = await supabase.from('transport_carriers').select('*').order('name');
+  const [{ data: c }, { data: p }, { data: w }, { data: vt }, { data: tc }] = await Promise.all([
+    supabase.from('categories').select('*').order('name'),
+    supabase.from('projects').select('*').eq('status', 'active').order('name'),
+    supabase.from('warehouses').select('*').order('name'),
+    supabase.from('vehicle_types').select('*').order('name'),
+    supabase.from('transport_carriers').select('*').order('name'),
+  ]);
   if (isStale()) return;
   const categories = c ?? [], projects = p ?? [], warehouses = w ?? [], vehicleTypes = vt ?? [], carriers = tc ?? [];
 
