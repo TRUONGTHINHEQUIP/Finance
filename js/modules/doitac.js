@@ -25,28 +25,43 @@ export async function render(container, profile, isStale = () => false) {
     renderList();
   }
 
+  // Trước đây hàm này hỏi database riêng cho TỪNG chủng loại (tới ~40 lần hỏi
+  // tuần tự cho 20 chủng loại) -> rất chậm. Giờ chỉ hỏi 1-2 lần duy nhất
+  // (toàn bộ giá khung của khách hàng, toàn bộ giá riêng của dự án nếu có),
+  // rồi tự ghép trong trình duyệt.
   async function getRateTable(partner, project) {
-    const rows = [];
-    for (const cat of categories) {
-      let rate = null, isOverride = false;
-      if (project) {
-        const { data: override } = await supabase.from('project_rate_overrides')
-          .select('daily_rate').eq('project_id', project.id).eq('category_id', cat.id)
-          .lte('effective_from', todayStr()).order('effective_from', { ascending: false }).limit(1).maybeSingle();
-        if (override) { rate = override.daily_rate; isOverride = true; }
-      }
-      if (rate === null) {
-        const { data: base } = await supabase.from('partner_rates')
-          .select('daily_rate').eq('partner_id', partner.id).eq('category_id', cat.id)
-          .lte('effective_from', todayStr()).order('effective_from', { ascending: false }).limit(1).maybeSingle();
-        rate = base?.daily_rate ?? null;
-      }
-      rows.push({ id: cat.id, name: cat.name, unit: cat.unit, rate, isOverride });
+    const today = todayStr();
+
+    const { data: baseRates } = await supabase.from('partner_rates')
+      .select('category_id, daily_rate, effective_from')
+      .eq('partner_id', partner.id)
+      .lte('effective_from', today)
+      .order('effective_from', { ascending: false });
+
+    const baseRateMap = {};
+    (baseRates ?? []).forEach(r => {
+      if (!(r.category_id in baseRateMap)) baseRateMap[r.category_id] = r.daily_rate;
+    });
+
+    let overrideMap = {};
+    if (project) {
+      const { data: overrides } = await supabase.from('project_rate_overrides')
+        .select('category_id, daily_rate, effective_from')
+        .eq('project_id', project.id)
+        .lte('effective_from', today)
+        .order('effective_from', { ascending: false });
+      (overrides ?? []).forEach(r => {
+        if (!(r.category_id in overrideMap)) overrideMap[r.category_id] = r.daily_rate;
+      });
     }
-    return rows;
+
+    return categories.map(cat => {
+      const isOverride = cat.id in overrideMap;
+      const rate = isOverride ? overrideMap[cat.id] : (baseRateMap[cat.id] ?? null);
+      return { id: cat.id, name: cat.name, unit: cat.unit, rate, isOverride };
+    });
   }
 
-  // ================= LIST =================
   function renderList() {
     const rows = partners.map(p => {
       const numProjects = projects.filter(pr => pr.partner_id === p.id).length;
@@ -71,7 +86,6 @@ export async function render(container, profile, isStale = () => false) {
     });
   }
 
-  // ================= MODAL CHI TIẾT =================
   function openDetailModal(partner) {
     const projs = projects.filter(pr => pr.partner_id === partner.id);
 
@@ -124,7 +138,6 @@ export async function render(container, profile, isStale = () => false) {
     dialog.querySelector('#dNewProject').addEventListener('click', () => openNewProjectModal(partner));
   }
 
-  // ================= TẠO DỰ ÁN MỚI (trong đúng đối tác đang xem) =================
   function openNewProjectModal(partner) {
     const bodyHtml = `
       <div class="field"><label>Tên dự án</label><input type="text" id="jName" placeholder="VD: Vega Nha Trang"></div>
@@ -147,46 +160,10 @@ export async function render(container, profile, isStale = () => false) {
       const { data: proj } = await supabase.from('projects').select('*').order('name');
       projects = proj ?? [];
       closeModal();
-      openDetailModal(partner); // mở lại modal với danh sách dự án đã cập nhật
+      openDetailModal(partner);
     });
   }
 
-  // ================= TẠO ĐỐI TÁC MỚI =================
-  function openNewPartnerModal() {
-    const bodyHtml = `
-      <div class="field"><label>Tên công ty</label><input type="text" id="pName" placeholder="CÔNG TY ..."></div>
-      <div class="field"><label>Địa chỉ</label><input type="text" id="pAddress"></div>
-      <div class="field-row">
-        <div class="field"><label>Mã số thuế</label><input type="text" id="pMst"></div>
-        <div class="field"><label>Kỳ chốt bill (ngày trong tháng)</label><input type="number" id="pCutoff" value="15" min="1" max="28"></div>
-      </div>
-      <div class="field-row">
-        <div class="field"><label>Số hợp đồng nguyên tắc</label><input type="text" id="pHopDong"></div>
-        <div class="field"><label>Ngày ký hợp đồng</label><input type="date" id="pNgayKy"></div>
-      </div>
-    `;
-    const footerHtml = `<button class="btn secondary" id="pCancel">Hủy</button><button class="btn" id="pSubmit">Tạo đối tác</button>`;
-    const dialog = openModal({ title: 'Tạo đối tác mới', bodyHtml, footerHtml });
-
-    dialog.querySelector('#pCancel').addEventListener('click', closeModal);
-    dialog.querySelector('#pSubmit').addEventListener('click', async () => {
-      const name = dialog.querySelector('#pName').value.trim();
-      if (!name) { alert('Nhập tên công ty.'); return; }
-      const { error } = await supabase.from('partners').insert({
-        name,
-        address: dialog.querySelector('#pAddress').value || null,
-        mst: dialog.querySelector('#pMst').value || null,
-        billing_cutoff_day: parseInt(dialog.querySelector('#pCutoff').value) || 15,
-        hop_dong_so: dialog.querySelector('#pHopDong').value || null,
-        hop_dong_ngay: dialog.querySelector('#pNgayKy').value || null,
-      });
-      if (error) { alert('Lỗi tạo đối tác: ' + error.message); return; }
-      closeModal();
-      loadAll();
-    });
-  }
-
-  // ================= TẠO BÁO GIÁ (mặc định hoặc riêng cho 1 dự án) =================
   function openRateModal(partner, project = null) {
     const isProjectRate = !!project;
     const bodyHtml = `
@@ -231,6 +208,40 @@ export async function render(container, profile, isStale = () => false) {
       if (error) { alert('Lỗi lưu báo giá: ' + error.message); return; }
       closeModal();
       alert(`Đã lưu ${rows.length} dòng đơn giá.`);
+    });
+  }
+
+  function openNewPartnerModal() {
+    const bodyHtml = `
+      <div class="field"><label>Tên công ty</label><input type="text" id="pName" placeholder="CÔNG TY ..."></div>
+      <div class="field"><label>Địa chỉ</label><input type="text" id="pAddress"></div>
+      <div class="field-row">
+        <div class="field"><label>Mã số thuế</label><input type="text" id="pMst"></div>
+        <div class="field"><label>Kỳ chốt bill (ngày trong tháng)</label><input type="number" id="pCutoff" value="15" min="1" max="28"></div>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>Số hợp đồng nguyên tắc</label><input type="text" id="pHopDong"></div>
+        <div class="field"><label>Ngày ký hợp đồng</label><input type="date" id="pNgayKy"></div>
+      </div>
+    `;
+    const footerHtml = `<button class="btn secondary" id="pCancel">Hủy</button><button class="btn" id="pSubmit">Tạo đối tác</button>`;
+    const dialog = openModal({ title: 'Tạo đối tác mới', bodyHtml, footerHtml });
+
+    dialog.querySelector('#pCancel').addEventListener('click', closeModal);
+    dialog.querySelector('#pSubmit').addEventListener('click', async () => {
+      const name = dialog.querySelector('#pName').value.trim();
+      if (!name) { alert('Nhập tên công ty.'); return; }
+      const { error } = await supabase.from('partners').insert({
+        name,
+        address: dialog.querySelector('#pAddress').value || null,
+        mst: dialog.querySelector('#pMst').value || null,
+        billing_cutoff_day: parseInt(dialog.querySelector('#pCutoff').value) || 15,
+        hop_dong_so: dialog.querySelector('#pHopDong').value || null,
+        hop_dong_ngay: dialog.querySelector('#pNgayKy').value || null,
+      });
+      if (error) { alert('Lỗi tạo đối tác: ' + error.message); return; }
+      closeModal();
+      loadAll();
     });
   }
 
