@@ -1,10 +1,11 @@
 // js/modules/danhmuc.js
-// Chỉ admin — khai báo dữ liệu đầu vào dùng chung: tên thiết bị (categories) và loại xe.
+// Chỉ admin — khai báo dữ liệu đầu vào dùng chung: tên thiết bị (theo nhóm A-E),
+// loại xe, và đơn vị vận chuyển.
 
 import { supabase } from '../core/config.js';
 import { requireRole } from '../core/auth.js';
 import { openModal, closeModal } from '../core/modal.js';
-import { fmtVND } from '../core/utils.js';
+import { fmtVND, esc } from '../core/utils.js';
 
 export async function render(container, profile, isStale = () => false) {
   if (!requireRole(profile, ['admin'])) {
@@ -18,8 +19,8 @@ export async function render(container, profile, isStale = () => false) {
     </div>
 
     <div class="panel" style="margin-bottom:18px;">
-      <div class="panel-head"><h3>Tên thiết bị &amp; quy cách</h3><button class="btn small" id="btnNewCat">+ Thêm thiết bị</button></div>
-      <div class="panel-body" style="padding:0"><table id="catTable"><tbody><tr><td class="loading">Đang tải...</td></tr></tbody></table></div>
+      <div class="panel-head"><h3>Nhóm hàng &amp; thiết bị</h3></div>
+      <div class="panel-body" style="padding:0"><table id="groupTable"><tbody><tr><td class="loading">Đang tải...</td></tr></tbody></table></div>
     </div>
 
     <div class="panel" style="margin-bottom:18px;">
@@ -35,32 +36,77 @@ export async function render(container, profile, isStale = () => false) {
 
   const { data: groups } = await supabase.from('groups').select('*').order('id');
   if (isStale()) return;
+  const groupList = groups ?? [];
 
+  let categories = [];
+
+  // ================= NHÓM HÀNG (list chính) =================
   async function loadCategories() {
     const { data, error } = await supabase.from('categories').select('*').order('name');
     if (isStale()) return;
-    const table = container.querySelector('#catTable');
-    if (error) { table.innerHTML = `<tr><td class="error-box">${error.message}</td></tr>`; return; }
-
-    const rows = (data ?? []).map(c => `<tr>
-      <td>${c.group_id}</td><td>${c.name}</td><td>${c.unit}</td>
-      <td class="num">${fmtVND(c.ref_value)}</td>
-      <td>${c.is_convertible ? '<span class="badge chinh">Có</span>' : '—'}</td>
-      <td><button class="btn secondary small" data-edit-cat="${c.id}">Sửa</button></td>
-    </tr>`).join('');
-
-    table.innerHTML = `<thead><tr><th>Nhóm</th><th>Tên thiết bị &amp; quy cách</th><th>ĐVT</th><th class="num">Trị giá TS</th><th>Quy đổi</th><th></th></tr></thead>
-      <tbody>${rows || '<tr><td colspan="6" class="empty-state">Chưa có thiết bị nào</td></tr>'}</tbody>`;
-
-    table.querySelectorAll('[data-edit-cat]').forEach(btn =>
-      btn.addEventListener('click', () => openCatModal(data.find(c => c.id === btn.dataset.editCat))));
+    if (error) { container.querySelector('#groupTable').innerHTML = `<tr><td class="error-box">${error.message}</td></tr>`; return; }
+    categories = data ?? [];
+    renderGroupTable();
   }
 
-  function openCatModal(existing) {
+  function renderGroupTable() {
+    const rows = groupList.map(g => {
+      const count = categories.filter(c => c.group_id === g.id).length;
+      return `<tr data-open-group="${g.id}" style="cursor:pointer;">
+        <td><b style="color:var(--red-dark);">${g.id}</b></td>
+        <td>${esc(g.name)}</td>
+        <td class="num">${count}</td>
+      </tr>`;
+    }).join('');
+
+    container.querySelector('#groupTable').innerHTML = `
+      <thead><tr><th style="width:60px;">Nhóm</th><th>Tên nhóm</th><th class="num">Số thiết bị</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="3" class="empty-state">Chưa có nhóm hàng nào</td></tr>'}</tbody>`;
+
+    container.querySelectorAll('[data-open-group]').forEach(tr => {
+      tr.addEventListener('click', () => openGroupDetailModal(groupList.find(g => g.id === tr.dataset.openGroup)));
+    });
+  }
+
+  // ================= MODAL CHI TIẾT 1 NHÓM =================
+  function openGroupDetailModal(group) {
+    const bodyHtml = `
+      <div style="display:flex; justify-content:flex-end; margin-bottom:10px;">
+        <button class="btn small" id="gAddCat">+ Thêm thiết bị vào nhóm ${group.id}</button>
+      </div>
+      <table id="catInGroupTable"></table>
+    `;
+    const dialog = openModal({ title: `${group.id} — ${group.name}`, bodyHtml, footerHtml: '', wide: true });
+
+    function renderItems() {
+      const items = categories.filter(c => c.group_id === group.id).sort((a, b) => a.name.localeCompare(b.name));
+      const rows = items.map(c => `<tr>
+        <td>${esc(c.name)}</td><td>${esc(c.unit)}</td>
+        <td class="num">${fmtVND(c.ref_value)}</td>
+        <td>${c.is_convertible ? '<span class="badge chinh">Có</span>' : '—'}</td>
+        <td><button class="btn secondary small" data-edit-cat="${c.id}">Sửa</button></td>
+      </tr>`).join('');
+
+      dialog.querySelector('#catInGroupTable').innerHTML = `
+        <thead><tr><th>Tên thiết bị &amp; quy cách</th><th>ĐVT</th><th class="num">Trị giá TS</th><th>Quy đổi</th><th></th></tr></thead>
+        <tbody>${rows || '<tr><td colspan="5" class="empty-state">Chưa có thiết bị nào trong nhóm này</td></tr>'}</tbody>`;
+
+      dialog.querySelectorAll('[data-edit-cat]').forEach(btn =>
+        btn.addEventListener('click', () => openCatModal(categories.find(c => c.id === btn.dataset.editCat), group, renderItems)));
+    }
+    renderItems();
+
+    dialog.querySelector('#gAddCat').addEventListener('click', () => openCatModal(null, group, renderItems));
+  }
+
+  // ================= THÊM/SỬA 1 THIẾT BỊ =================
+  // defaultGroup: nhóm được chọn sẵn khi thêm mới từ trong modal chi tiết nhóm
+  // onSaved: callback vẽ lại danh sách trong modal chi tiết đang mở (nếu có)
+  function openCatModal(existing, defaultGroup, onSaved) {
     const isNew = !existing;
     const bodyHtml = `
       <div class="field"><label>Nhóm hàng</label>
-        <select id="cGroup">${(groups ?? []).map(g => `<option value="${g.id}" ${existing?.group_id === g.id ? 'selected' : ''}>${g.id} — ${g.name}</option>`).join('')}</select>
+        <select id="cGroup">${groupList.map(g => `<option value="${g.id}" ${(existing?.group_id ?? defaultGroup?.id) === g.id ? 'selected' : ''}>${g.id} — ${g.name}</option>`).join('')}</select>
       </div>
       <div class="field"><label>Tên thiết bị &amp; quy cách</label><input type="text" id="cName" value="${existing?.name ?? ''}" placeholder="VD: Chống Nêm D48.3x2.0, L=1500 CĐ"></div>
       <div class="field-row">
@@ -87,18 +133,21 @@ export async function render(container, profile, isStale = () => false) {
         ? await supabase.from('categories').insert(payload)
         : await supabase.from('categories').update(payload).eq('id', existing.id);
       if (error) { alert('Lỗi lưu: ' + error.message); return; }
+
       closeModal();
-      loadCategories();
+      await loadCategories();
+      if (onSaved) onSaved();
     });
   }
 
+  // ================= LOẠI XE =================
   async function loadVehicleTypes() {
     const { data, error } = await supabase.from('vehicle_types').select('*').order('name');
     if (isStale()) return;
     const table = container.querySelector('#vehicleTable');
     if (error) { table.innerHTML = `<tr><td class="error-box">${error.message}</td></tr>`; return; }
 
-    const rows = (data ?? []).map(v => `<tr><td>${v.name}</td>
+    const rows = (data ?? []).map(v => `<tr><td>${esc(v.name)}</td>
       <td><button class="btn secondary small" data-del-vehicle="${v.id}">Xóa</button></td></tr>`).join('');
     table.innerHTML = `<thead><tr><th>Loại xe</th><th></th></tr></thead>
       <tbody>${rows || '<tr><td colspan="2" class="empty-state">Chưa có loại xe nào</td></tr>'}</tbody>`;
@@ -127,13 +176,14 @@ export async function render(container, profile, isStale = () => false) {
     });
   }
 
+  // ================= ĐƠN VỊ VẬN CHUYỂN =================
   async function loadCarriers() {
     const { data, error } = await supabase.from('transport_carriers').select('*').order('name');
     if (isStale()) return;
     const table = container.querySelector('#carrierTable');
     if (error) { table.innerHTML = `<tr><td class="error-box">${error.message}</td></tr>`; return; }
 
-    const rows = (data ?? []).map(c => `<tr><td>${c.name}</td>
+    const rows = (data ?? []).map(c => `<tr><td>${esc(c.name)}</td>
       <td><button class="btn secondary small" data-del-carrier="${c.id}">Xóa</button></td></tr>`).join('');
     table.innerHTML = `<thead><tr><th>Đơn vị vận chuyển</th><th></th></tr></thead>
       <tbody>${rows || '<tr><td colspan="2" class="empty-state">Chưa có đơn vị vận chuyển nào</td></tr>'}</tbody>`;
@@ -162,7 +212,6 @@ export async function render(container, profile, isStale = () => false) {
     });
   }
 
-  container.querySelector('#btnNewCat').addEventListener('click', () => openCatModal(null));
   container.querySelector('#btnNewVehicle').addEventListener('click', openVehicleModal);
   container.querySelector('#btnNewCarrier').addEventListener('click', openCarrierModal);
 
