@@ -18,8 +18,10 @@ export async function render(container, profile, isStale = () => false) {
     const { data: p, error } = await supabase.from('partners').select('*').order('name');
     if (isStale()) return;
     if (error) { container.querySelector('#partnerList').innerHTML = `<div class="error-box">${error.message}</div>`; return; }
-    const { data: proj } = await supabase.from('projects').select('*').order('name');
-    const { data: cats } = await supabase.from('categories').select('*').order('name');
+    const [{ data: proj }, { data: cats }] = await Promise.all([
+      supabase.from('projects').select('*').order('name'),
+      supabase.from('categories').select('*').order('name'),
+    ]);
     if (isStale()) return;
     partners = p ?? []; projects = proj ?? []; categories = cats ?? [];
     renderList();
