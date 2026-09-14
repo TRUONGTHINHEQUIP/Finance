@@ -55,11 +55,6 @@ export async function render(container, profile, isStale = () => false) {
   container.querySelector('#btnNewPhieu').addEventListener('click', () => openNewPhieuModal());
   container.querySelector('#gnFilterProject').addEventListener('change', loadPhieu);
 
-  async function nextAssetSeq(categoryId) {
-    const { count } = await supabase.from('asset_units').select('id', { count: 'exact', head: true }).eq('category_id', categoryId);
-    return (count ?? 0) + 1;
-  }
-
   // ================= TẠO PHIẾU MỚI =================
   async function openNewPhieuModal() {
     const bodyHtml = `
@@ -163,6 +158,10 @@ export async function render(container, profile, isStale = () => false) {
 
       const project_id = fromType === 'du_an' ? fromId : (toType === 'du_an' ? toId : null);
 
+      const code = dialog.querySelector('#mCode').value.trim();
+      if (!code) { alert('Nhập số phiếu theo đúng giấy tại hiện trường.'); return; }
+      const files = Array.from(dialog.querySelector('#mFiles').files);
+
       const ngay_ky = dialog.querySelector('#mDate').value;
       const nguoi_giao = dialog.querySelector('#mNguoiGiao').value || null;
       const quan_ly_xuat = dialog.querySelector('#mQuanLy').value || null;
@@ -170,9 +169,6 @@ export async function render(container, profile, isStale = () => false) {
       const bien_so = dialog.querySelector('#mBienSo').value || null;
       const loai_xe_id = dialog.querySelector('#mLoaiXe').value || null;
       const transport_fee = parseFloat(dialog.querySelector('#mTransportFee').value) || null;
-      const code = dialog.querySelector('#mCode').value.trim();
-      if (!code) { alert('Nhập số phiếu theo đúng giấy tại hiện trường.'); return; }
-      const files = Array.from(dialog.querySelector('#mFiles').files);
 
       const submitBtn = dialog.querySelector('#mSubmit');
       submitBtn.disabled = true; submitBtn.textContent = 'Đang tạo...';
@@ -201,7 +197,6 @@ export async function render(container, profile, isStale = () => false) {
   }
 
   // ================= MODAL XỬ LÝ CHÊNH LỆCH (thiếu ở chủng loại quy đổi được) =================
-  // Trả về { conversions, remainingSurplus } nếu xử lý xong, hoặc null nếu người dùng hủy hẳn (không xác nhận phiếu)
   function resolveDeficitsModal(deficits, surplusPool) {
     return new Promise((resolve) => {
       const bodyHtml = `
@@ -241,7 +236,7 @@ export async function render(container, profile, isStale = () => false) {
 
         if (unresolvedCount > 0) {
           const ok = confirm(`Còn ${unresolvedCount} chủng loại chưa quy đổi — sẽ ghi nhận là THIẾU THẬT, không tự tạo hao hụt (Kho/Sale xử lý riêng sau). Vẫn tiếp tục xác nhận phiếu?`);
-          if (!ok) return; // ở lại modal, không đóng
+          if (!ok) return;
         }
 
         const remainingSurplus = surplusPool.filter((s, i) => !usedSurplusIdx.has(i));
@@ -249,6 +244,11 @@ export async function render(container, profile, isStale = () => false) {
         resolve({ conversions, remainingSurplus });
       });
     });
+  }
+
+  async function nextAssetSeq(categoryId) {
+    const { count } = await supabase.from('asset_units').select('id', { count: 'exact', head: true }).eq('category_id', categoryId);
+    return (count ?? 0) + 1;
   }
 
   // ================= XỬ LÝ XÁC NHẬN (dùng chung cho modal chi tiết) =================
@@ -332,7 +332,21 @@ export async function render(container, profile, isStale = () => false) {
                  <span>Vận chuyển: <b>${esc(carriers.find(c => c.id === note.nha_xe_id)?.name ?? note.nha_xe ?? '—')}</b> · Số xe <b>${esc(note.bien_so ?? '—')}</b> · ${esc(vehicleTypes.find(v => v.id === note.loai_xe_id)?.name ?? '—')}${note.transport_fee ? ` · Phí: <b>${Number(note.transport_fee).toLocaleString('vi-VN')} đ</b>` : ''}</span>`,
     });
 
-    const dialog = openModal({ title: `Phiếu ${note.code}`, bodyHtml: cardHtml, footerHtml: '', wide: true });
+    const footerHtml = `<button class="btn secondary" id="dCopyLink">🔗 Copy link chia sẻ</button>`;
+    const dialog = openModal({ title: `Phiếu ${note.code}`, bodyHtml: cardHtml, footerHtml, wide: true });
+
+    dialog.querySelector('#dCopyLink').addEventListener('click', async () => {
+      const url = `${window.location.origin}${window.location.pathname}#/giaonhan?note=${note.id}`;
+      try {
+        await navigator.clipboard.writeText(url);
+        const btn = dialog.querySelector('#dCopyLink');
+        const oldText = btn.textContent;
+        btn.textContent = '✓ Đã copy';
+        setTimeout(() => { btn.textContent = oldText; }, 1500);
+      } catch {
+        prompt('Copy link này gửi qua Zalo/chat:', url);
+      }
+    });
 
     renderAttachmentRow(note.id).then(html => {
       const el = dialog.querySelector(`#attach-${note.id}`);
@@ -404,6 +418,13 @@ export async function render(container, profile, isStale = () => false) {
     container.querySelectorAll('[data-open-note]').forEach(tr => {
       tr.addEventListener('click', () => openDetailModal(notes.find(n => n.id === tr.dataset.openNote)));
     });
+
+    // Nếu vào trang qua link chia sẻ (#/giaonhan?note=xxx) thì tự mở đúng phiếu đó
+    const match = window.location.hash.match(/[?&]note=([^&]+)/);
+    if (match) {
+      const targetNote = notes.find(n => n.id === match[1]);
+      if (targetNote) openDetailModal(targetNote);
+    }
   }
 
   await loadPhieu();
