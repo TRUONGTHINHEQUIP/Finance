@@ -1,9 +1,8 @@
 // js/modules/bangke.js
 import { supabase } from '../core/config.js';
-import { openModal } from '../core/modal.js';
+import { openModal, closeModal } from '../core/modal.js';
 import { fmtVND, fmtDate, todayStr, addDaysStr, esc } from '../core/utils.js';
 import { computeStatement, saveStatement, findClosedStatement, getPendingAdjustments, markAdjustmentsApplied, createAdjustment } from '../core/billing.js';
-import { closeModal } from '../core/modal.js';
 
 function sourceTypeLabel(type) {
   if (type === 'ton_dau_ky') return 'TỒN ĐẦU KỲ';
@@ -35,8 +34,10 @@ export async function render(container, profile, isStale = () => false) {
     </div>
   `;
 
-  const { data: c } = await supabase.from('categories').select('*');
-  const { data: p } = await supabase.from('projects').select('*, partners(name)').eq('status', 'active').order('name');
+  const [{ data: c }, { data: p }] = await Promise.all([
+    supabase.from('categories').select('*'),
+    supabase.from('projects').select('*, partners(name)').eq('status', 'active').order('name'),
+  ]);
   if (isStale()) return;
   const categories = c ?? [], projects = p ?? [];
 
