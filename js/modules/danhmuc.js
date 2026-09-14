@@ -215,7 +215,5 @@ export async function render(container, profile, isStale = () => false) {
   container.querySelector('#btnNewVehicle').addEventListener('click', openVehicleModal);
   container.querySelector('#btnNewCarrier').addEventListener('click', openCarrierModal);
 
-  await loadCategories();
-  await loadVehicleTypes();
-  await loadCarriers();
+  await Promise.all([loadCategories(), loadVehicleTypes(), loadCarriers()]);
 }
