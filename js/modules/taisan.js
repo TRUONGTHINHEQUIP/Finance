@@ -24,15 +24,16 @@ export async function render(container, profile, isStale = () => false) {
 
   let allRows = [], rawAssets = [];
 
-  const { data: groups } = await supabase.from('groups').select('*').order('id');
+  const [{ data: groups }, { data: categories }, { data: warehouses }, { data: projects }] = await Promise.all([
+    supabase.from('groups').select('*').order('id'),
+    supabase.from('categories').select('*').order('name'),
+    supabase.from('warehouses').select('*').order('name'),
+    supabase.from('projects').select('*').eq('status', 'active').order('name'),
+  ]);
   if (isStale()) return;
+
   container.querySelector('#filterGroup').innerHTML = '<option value="">Tất cả nhóm hàng</option>' +
     (groups ?? []).map(g => `<option value="${g.id}">${g.id} — ${g.name}</option>`).join('');
-
-  const { data: categories } = await supabase.from('categories').select('*').order('name');
-  const { data: warehouses } = await supabase.from('warehouses').select('*').order('name');
-  const { data: projects } = await supabase.from('projects').select('*').eq('status', 'active').order('name');
-  if (isStale()) return;
 
   function openAddAssetModal() {
     const bodyHtml = `
