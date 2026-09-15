@@ -108,20 +108,30 @@ export async function render(container, profile, isStale = () => false) {
 
   function renderTransportRows(transportItems) {
     if (!transportItems || transportItems.length === 0) return ''; // không có xe công ty nào chạy trong kỳ -> không hiện Nhóm F
-    const total = transportItems.reduce((s, t) => s + t.thanhTien, 0);
-    const rows = transportItems.map(t => `<tr>
-      <td>${esc(vehicleLabel(t.company_vehicle_id))}</td>
-      <td class="num">${t.soChuyen}</td>
-      <td class="num">${fmtVND(t.thanhTien / t.soChuyen)}</td>
-      <td class="num">${fmtVND(t.thanhTien)}</td>
-    </tr>`).join('');
+    let grandTotal = 0;
+    let rows = '';
+    transportItems.forEach(t => {
+      grandTotal += t.thanhTien;
+      rows += `<tr style="font-weight:600; color:var(--red-dark);">
+        <td>${esc(vehicleLabel(t.company_vehicle_id))}</td>
+        <td class="num">${t.soChuyen}</td><td></td>
+        <td class="num">${fmtVND(t.thanhTien)}</td><td></td>
+      </tr>`;
+      (t.trips ?? []).slice().sort((a, b) => a.ngay.localeCompare(b.ngay)).forEach(trip => {
+        rows += `<tr>
+          <td style="padding-left:20px;">${fmtDate(trip.ngay)} — Chuyến vận chuyển</td>
+          <td></td><td class="num">${fmtVND(trip.fee)}</td>
+          <td class="num">${fmtVND(trip.fee)}</td><td>${esc(trip.code)}</td>
+        </tr>`;
+      });
+    });
 
     return `
       <div style="font-weight:700; margin-top:16px; background:var(--gray-tint); padding:8px 12px;">NHÓM F — VẬN CHUYỂN (xe công ty)</div>
       <table style="margin-top:0;">
-        <thead><tr><th>Xe (biển số — loại xe)</th><th class="num">Số chuyến</th><th class="num">Đơn giá bình quân/chuyến</th><th class="num">Thành tiền</th></tr></thead>
+        <thead><tr><th>Xe / Diễn giải</th><th class="num">Số chuyến</th><th class="num">Đơn giá</th><th class="num">Thành tiền</th><th>Phiếu GN</th></tr></thead>
         <tbody>${rows}</tbody>
-        <tfoot><tr><td colspan="3">Tổng vận chuyển</td><td class="num">${fmtVND(total)}</td></tr></tfoot>
+        <tfoot><tr><td colspan="3">Tổng vận chuyển</td><td class="num">${fmtVND(grandTotal)}</td><td></td></tr></tfoot>
       </table>`;
   }
 
@@ -292,11 +302,13 @@ export async function render(container, profile, isStale = () => false) {
     if (error) { alert('Lỗi tải chi tiết: ' + error.message); return; }
 
     const rows = renderHierarchicalRentalRows(lines ?? []);
+    const transportHtml = renderTransportRows(statement.transport_detail);
 
     const bodyHtml = `
       <div style="margin-bottom:10px;">${statement.status === 'closed' ? '<span class="badge chinh">Đã chốt</span>' : '<span class="badge tam">Nháp</span>'}</div>
       <table><thead><tr><th style="width:34px;">STT</th><th>Ngày ký</th><th>Diễn giải / Chủng loại</th><th>ĐVT</th><th class="num">Số ngày</th><th class="num">SL</th><th class="num">Đơn giá</th><th class="num">Thành tiền</th><th>Phiếu GN</th></tr></thead>
         <tbody>${rows}</tbody></table>
+      ${transportHtml}
       <table style="margin-top:10px;">
         <tr><td style="border:none;width:70%"></td><td style="border:none;">Tiền thuê</td><td class="num" style="border:none;">${fmtVND(statement.rental_subtotal)}</td></tr>
         ${statement.transport_subtotal ? `<tr><td style="border:none;"></td><td style="border:none;">Vận chuyển</td><td class="num" style="border:none;">${fmtVND(statement.transport_subtotal)}</td></tr>` : ''}
