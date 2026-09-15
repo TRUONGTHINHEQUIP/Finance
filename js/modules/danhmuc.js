@@ -28,9 +28,14 @@ export async function render(container, profile, isStale = () => false) {
       <div class="panel-body" style="padding:0"><table id="vehicleTable"><tbody><tr><td class="loading">Đang tải...</td></tr></tbody></table></div>
     </div>
 
-    <div class="panel">
-      <div class="panel-head"><h3>Đơn vị vận chuyển (nhà xe)</h3><button class="btn small" id="btnNewCarrier">+ Thêm đơn vị vận chuyển</button></div>
+    <div class="panel" style="margin-bottom:18px;">
+      <div class="panel-head"><h3>Đơn vị vận chuyển (nhà xe ngoài)</h3><button class="btn small" id="btnNewCarrier">+ Thêm đơn vị vận chuyển</button></div>
       <div class="panel-body" style="padding:0"><table id="carrierTable"><tbody><tr><td class="loading">Đang tải...</td></tr></tbody></table></div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><h3>Xe của công ty</h3><button class="btn small" id="btnNewCompanyVehicle">+ Thêm xe</button></div>
+      <div class="panel-body" style="padding:0"><table id="companyVehicleTable"><tbody><tr><td class="loading">Đang tải...</td></tr></tbody></table></div>
     </div>
   `;
 
@@ -39,6 +44,7 @@ export async function render(container, profile, isStale = () => false) {
   const groupList = groups ?? [];
 
   let categories = [];
+  let vehicleTypesList = [];
 
   // ================= NHÓM HÀNG (list chính) =================
   async function loadCategories() {
@@ -146,6 +152,7 @@ export async function render(container, profile, isStale = () => false) {
     if (isStale()) return;
     const table = container.querySelector('#vehicleTable');
     if (error) { table.innerHTML = `<tr><td class="error-box">${error.message}</td></tr>`; return; }
+    vehicleTypesList = data ?? [];
 
     const rows = (data ?? []).map(v => `<tr><td>${esc(v.name)}</td>
       <td><button class="btn secondary small" data-del-vehicle="${v.id}">Xóa</button></td></tr>`).join('');
@@ -212,8 +219,52 @@ export async function render(container, profile, isStale = () => false) {
     });
   }
 
+  // ================= XE CỦA CÔNG TY =================
+  async function loadCompanyVehicles() {
+    const { data, error } = await supabase.from('company_vehicles').select('*, vehicle_types(name)').order('bien_so');
+    if (isStale()) return;
+    const table = container.querySelector('#companyVehicleTable');
+    if (error) { table.innerHTML = `<tr><td class="error-box">${error.message}</td></tr>`; return; }
+
+    const rows = (data ?? []).map(v => `<tr>
+      <td><b>${esc(v.bien_so)}</b></td><td>${esc(v.vehicle_types?.name ?? '—')}</td><td>${esc(v.ghi_chu ?? '—')}</td>
+      <td><button class="btn secondary small" data-del-companyvehicle="${v.id}">Xóa</button></td></tr>`).join('');
+    table.innerHTML = `<thead><tr><th>Biển số</th><th>Loại xe</th><th>Ghi chú</th><th></th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="4" class="empty-state">Chưa có xe nào — bấm "+ Thêm xe"</td></tr>'}</tbody>`;
+
+    table.querySelectorAll('[data-del-companyvehicle]').forEach(btn =>
+      btn.addEventListener('click', async () => {
+        if (!confirm('Xóa xe này khỏi danh sách?')) return;
+        await supabase.from('company_vehicles').delete().eq('id', btn.dataset.delCompanyvehicle);
+        loadCompanyVehicles();
+      }));
+  }
+
+  function openCompanyVehicleModal() {
+    const bodyHtml = `
+      <div class="field"><label>Biển số</label><input type="text" id="cvBienSo" placeholder="VD: 50H-123.45"></div>
+      <div class="field"><label>Loại xe</label><select id="cvLoaiXe"><option value="">— Chọn —</option>${vehicleTypesList.map(v => `<option value="${v.id}">${esc(v.name)}</option>`).join('')}</select></div>
+      <div class="field"><label>Ghi chú</label><input type="text" id="cvGhiChu" placeholder="Không bắt buộc"></div>
+    `;
+    const footerHtml = `<button class="btn secondary" id="cvCancel">Hủy</button><button class="btn" id="cvSubmit">Thêm xe</button>`;
+    const dialog = openModal({ title: 'Thêm xe công ty', bodyHtml, footerHtml });
+
+    dialog.querySelector('#cvCancel').addEventListener('click', closeModal);
+    dialog.querySelector('#cvSubmit').addEventListener('click', async () => {
+      const bien_so = dialog.querySelector('#cvBienSo').value.trim();
+      const loai_xe_id = dialog.querySelector('#cvLoaiXe').value || null;
+      const ghi_chu = dialog.querySelector('#cvGhiChu').value || null;
+      if (!bien_so) { alert('Nhập biển số xe.'); return; }
+      const { error } = await supabase.from('company_vehicles').insert({ bien_so, loai_xe_id, ghi_chu });
+      if (error) { alert('Lỗi lưu: ' + error.message); return; }
+      closeModal();
+      loadCompanyVehicles();
+    });
+  }
+
   container.querySelector('#btnNewVehicle').addEventListener('click', openVehicleModal);
   container.querySelector('#btnNewCarrier').addEventListener('click', openCarrierModal);
+  container.querySelector('#btnNewCompanyVehicle').addEventListener('click', () => openCompanyVehicleModal());
 
-  await Promise.all([loadCategories(), loadVehicleTypes(), loadCarriers()]);
+  await Promise.all([loadCategories(), loadVehicleTypes(), loadCarriers(), loadCompanyVehicles()]);
 }
