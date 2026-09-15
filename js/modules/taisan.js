@@ -64,7 +64,7 @@ export async function render(container, profile, isStale = () => false) {
   const khoQty = (categoryId) => summary.filter(r => r.category_id === categoryId && r.status === 'kho').reduce((s, r) => s + r.qty, 0);
   const totalOwned = (categoryId) => khoQty(categoryId) + totalDeployed(categoryId);
 
-  const expandedGroups = new Set();
+  const expandedGroups = new Set(groupList.map(g => g.id)); // mặc định sổ hết ra sẵn — không nhiều nhóm nên không cần thu gọn
 
   function renderGroupTable() {
     let rowsHtml = '';
@@ -75,7 +75,7 @@ export async function render(container, profile, isStale = () => false) {
       const isOpen = expandedGroups.has(g.id);
 
       rowsHtml += `<tr data-toggle-group="${g.id}" style="cursor:pointer; background:var(--gray-tint); font-weight:600;">
-        <td style="color:var(--red-dark);">${isOpen ? '▾' : '▸'}&nbsp;${g.id}</td>
+        <td style="color:var(--red-dark);">${isOpen ? '▾' : '▸'}&nbsp;NHÓM ${g.id}</td>
         <td>${esc(g.name)}</td>
         <td class="num">${groupTotalQty ? fmtNum(groupTotalQty) : ''}</td>
         <td style="color:var(--ink-soft); font-weight:400;">${catsInGroup.length} chủng loại</td>
