@@ -1,6 +1,6 @@
 // js/modules/taisan.js
 import { supabase } from '../core/config.js';
-import { fmtNum, fmtVND, todayStr } from '../core/utils.js';
+import { fmtNum, fmtVND, todayStr, esc } from '../core/utils.js';
 import { openModal, closeModal } from '../core/modal.js';
 
 export async function render(container, profile, isStale = () => false) {
@@ -11,6 +11,7 @@ export async function render(container, profile, isStale = () => false) {
     </div>
     <div class="toolbar">
       <select id="filterGroup"><option value="">Tất cả nhóm hàng</option></select>
+      <select id="filterCategory"><option value="">Tất cả chủng loại</option></select>
       <select id="filterStatus">
         <option value="">Tất cả trạng thái</option>
         <option value="kho">Tại kho</option>
@@ -19,10 +20,11 @@ export async function render(container, profile, isStale = () => false) {
       </select>
       <input type="text" id="filterText" placeholder="Tìm theo tên chủng loại...">
     </div>
+    <div id="categorySummary"></div>
     <div class="panel"><div class="panel-body" style="padding:0"><table id="assetTable"><tbody><tr><td class="loading">Đang tải...</td></tr></tbody></table></div></div>
   `;
 
-  let allRows = [], rawAssets = [];
+  let allRows = [];
 
   const [{ data: groups }, { data: categories }, { data: warehouses }, { data: projects }] = await Promise.all([
     supabase.from('groups').select('*').order('id'),
@@ -34,6 +36,8 @@ export async function render(container, profile, isStale = () => false) {
 
   container.querySelector('#filterGroup').innerHTML = '<option value="">Tất cả nhóm hàng</option>' +
     (groups ?? []).map(g => `<option value="${g.id}">${g.id} — ${g.name}</option>`).join('');
+  container.querySelector('#filterCategory').innerHTML = '<option value="">Tất cả chủng loại</option>' +
+    (categories ?? []).map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
 
   function openAddAssetModal() {
     const bodyHtml = `
@@ -46,16 +50,16 @@ export async function render(container, profile, isStale = () => false) {
         </select>
       </div>
       <div class="field-row">
-        <div class="field"><label>Chủng loại</label><select id="aCategory">${(categories ?? []).map(c => `<option value="${c.id}" data-refvalue="${c.ref_value}">${c.name}</option>`).join('')}</select></div>
+        <div class="field"><label>Chủng loại</label><select id="aCategory">${(categories ?? []).map(c => `<option value="${c.id}" data-refvalue="${c.ref_value}">${esc(c.name)}</option>`).join('')}</select></div>
         <div class="field"><label>Số lượng</label><input type="number" id="aQty" value="1" min="1"></div>
       </div>
       <div class="field" id="aWarehouseField">
         <label>Nhập vào kho</label>
-        <select id="aWarehouse">${(warehouses ?? []).map(w => `<option value="${w.id}">${w.name}</option>`).join('')}</select>
+        <select id="aWarehouse">${(warehouses ?? []).map(w => `<option value="${w.id}">${esc(w.name)}</option>`).join('')}</select>
       </div>
       <div class="field" id="aProjectField" style="display:none;">
         <label>Chuyển đến dự án</label>
-        <select id="aProject">${(projects ?? []).map(p => `<option value="${p.id}">${p.name}</option>`).join('')}</select>
+        <select id="aProject">${(projects ?? []).map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select>
       </div>
       <div class="field-row">
         <div class="field"><label>Giá trị mua (mỗi đơn vị)</label><input type="number" id="aValue" value="${categories?.[0]?.ref_value ?? ''}"></div>
@@ -130,10 +134,7 @@ export async function render(container, profile, isStale = () => false) {
   container.querySelector('#btnAddAsset').addEventListener('click', openAddAssetModal);
 
   async function loadAssets() {
-    const { data: assets, error } = await supabase
-      .from('asset_units')
-      .select('id, asset_code, status, category_id, warehouse_id, project_id, purchase_date, purchase_value, source_note, categories(name, unit, group_id, ref_value), warehouses:warehouse_id(name), projects:project_id(name)');
-
+    const { data: rows, error } = await supabase.from('asset_summary').select('*');
     if (isStale()) return;
 
     if (error) {
@@ -141,30 +142,61 @@ export async function render(container, profile, isStale = () => false) {
       return;
     }
 
-    const map = {};
-    (assets ?? []).forEach(a => {
-      const loc = a.status === 'tai_du_an' ? 'Tại dự án — ' + (a.projects?.name ?? '(?)')
-        : a.status === 'kho' ? 'Tại kho — ' + (a.warehouses?.name ?? '(?)')
+    allRows = (rows ?? []).map(r => {
+      const category = categories.find(c => c.id === r.category_id);
+      const loc = r.status === 'tai_du_an' ? 'Tại dự án — ' + (projects.find(p => p.id === r.project_id)?.name ?? '(?)')
+        : r.status === 'kho' ? 'Tại kho — ' + (warehouses.find(w => w.id === r.warehouse_id)?.name ?? '(?)')
         : 'Cần bảo trì';
-      const key = a.category_id + '|' + a.status + '|' + (a.warehouse_id ?? '') + '|' + (a.project_id ?? '');
-      if (!map[key]) map[key] = { category: a.categories, category_id: a.category_id, status: a.status, warehouse_id: a.warehouse_id, project_id: a.project_id, loc, qty: 0, key };
-      map[key].qty += 1;
+      return {
+        category, category_id: r.category_id, status: r.status,
+        warehouse_id: r.warehouse_id, project_id: r.project_id, loc, qty: r.qty,
+        key: r.category_id + '|' + r.status + '|' + (r.warehouse_id ?? '') + '|' + (r.project_id ?? ''),
+      };
     });
-    allRows = Object.values(map);
-    rawAssets = assets ?? [];
+  }
+
+  function renderCategorySummary(catF) {
+    const el = container.querySelector('#categorySummary');
+    if (!catF) { el.innerHTML = ''; return; }
+
+    const catRows = allRows.filter(r => r.category_id === catF);
+    const category = categories.find(c => c.id === catF);
+    const totalQty = catRows.reduce((s, r) => s + r.qty, 0);
+    const atKho = catRows.filter(r => r.status === 'kho').reduce((s, r) => s + r.qty, 0);
+    const atProjectRows = catRows.filter(r => r.status === 'tai_du_an');
+    const atProjectTotal = atProjectRows.reduce((s, r) => s + r.qty, 0);
+    const atBaoTri = catRows.filter(r => r.status === 'can_bao_tri').reduce((s, r) => s + r.qty, 0);
+
+    const projectLines = atProjectRows
+      .sort((a, b) => b.qty - a.qty)
+      .map(r => `<div>${esc(r.loc.replace('Tại dự án — ', ''))}: <b>${fmtNum(r.qty)}</b> ${esc(category?.unit ?? '')}</div>`)
+      .join('');
+
+    el.innerHTML = `
+      <div class="info-box" style="margin-bottom:14px;">
+        <b>${esc(category?.name ?? '')}</b> — Tổng công ty: <b>${fmtNum(totalQty)}</b> ${esc(category?.unit ?? '')}
+        &nbsp;·&nbsp; Tại kho: <b>${fmtNum(atKho)}</b>
+        &nbsp;·&nbsp; Tại dự án: <b>${fmtNum(atProjectTotal)}</b> (${atProjectRows.length} dự án)
+        ${atBaoTri ? `&nbsp;·&nbsp; Cần bảo trì: <b>${fmtNum(atBaoTri)}</b>` : ''}
+        ${projectLines ? `<div style="margin-top:8px; display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:2px 16px; font-size:.83rem;">${projectLines}</div>` : ''}
+      </div>`;
   }
 
   function renderTable() {
     const groupF = container.querySelector('#filterGroup').value;
+    const catF = container.querySelector('#filterCategory').value;
     const statusF = container.querySelector('#filterStatus').value;
     const textF = container.querySelector('#filterText').value.trim().toLowerCase();
 
     const rows = allRows.filter(r => {
       if (groupF && r.category?.group_id !== groupF) return false;
+      if (catF && r.category_id !== catF) return false;
       if (statusF && r.status !== statusF) return false;
       if (textF && !r.category?.name?.toLowerCase().includes(textF)) return false;
       return true;
     });
+
+    renderCategorySummary(catF);
 
     let grandTotal = 0;
     const body = rows.map(r => {
@@ -175,8 +207,8 @@ export async function render(container, profile, isStale = () => false) {
         : '<span class="badge chinh">Sẵn sàng</span>';
       return `<tr data-open-row="${r.key}" style="cursor:pointer;">
         <td>${r.category?.group_id ?? ''}</td>
-        <td>${r.category?.name ?? '(?)'}</td>
-        <td>${r.category?.unit ?? ''}</td>
+        <td>${esc(r.category?.name ?? '(?)')}</td>
+        <td>${esc(r.category?.unit ?? '')}</td>
         <td class="num">${fmtNum(r.qty)}</td>
         <td class="num">${fmtVND(r.category?.ref_value ?? 0)}</td>
         <td class="num">${fmtVND(thanhTien)}</td>
@@ -195,22 +227,27 @@ export async function render(container, profile, isStale = () => false) {
     });
   }
 
-  function openDetailModal(row) {
-    const items = rawAssets.filter(a =>
-      a.category_id === row.category_id && a.status === row.status &&
-      (a.warehouse_id ?? '') === (row.warehouse_id ?? '') && (a.project_id ?? '') === (row.project_id ?? '')
-    );
+  async function openDetailModal(row) {
+    let q = supabase.from('asset_units')
+      .select('id, asset_code, purchase_date, purchase_value, source_note')
+      .eq('category_id', row.category_id).eq('status', row.status)
+      .order('asset_code').limit(2000);
+    if (row.warehouse_id) q = q.eq('warehouse_id', row.warehouse_id);
+    if (row.project_id) q = q.eq('project_id', row.project_id);
 
-    const rowsHtml = items.map(a => `<tr>
-      <td>${a.asset_code}</td>
+    const { data: items, error } = await q;
+    if (error) { alert('Lỗi tải chi tiết: ' + error.message); return; }
+
+    const rowsHtml = (items ?? []).map(a => `<tr>
+      <td>${esc(a.asset_code)}</td>
       <td>${a.purchase_date ? new Date(a.purchase_date).toLocaleDateString('vi-VN') : '—'}</td>
       <td class="num">${fmtVND(a.purchase_value ?? 0)}</td>
-      <td style="font-size:.78rem; color:var(--ink-soft);">${a.source_note ?? '—'}</td>
+      <td style="font-size:.78rem; color:var(--ink-soft);">${esc(a.source_note ?? '—')}</td>
     </tr>`).join('');
 
     const bodyHtml = `
       <div style="font-size:.85rem; color:var(--ink-soft); margin-bottom:12px;">
-        ${row.category?.name ?? '(?)'} · ${row.loc} · ${items.length} đơn vị
+        ${esc(row.category?.name ?? '(?)')} · ${esc(row.loc)} · ${(items ?? []).length} đơn vị
       </div>
       <div style="max-height:400px; overflow-y:auto;">
         <table>
@@ -222,7 +259,7 @@ export async function render(container, profile, isStale = () => false) {
     openModal({ title: `Chi tiết tài sản — ${row.category?.name ?? ''}`, bodyHtml, footerHtml: '', wide: true });
   }
 
-  ['filterGroup', 'filterStatus', 'filterText'].forEach(id =>
+  ['filterGroup', 'filterCategory', 'filterStatus', 'filterText'].forEach(id =>
     container.querySelector('#' + id).addEventListener('input', renderTable));
 
   await loadAssets();
