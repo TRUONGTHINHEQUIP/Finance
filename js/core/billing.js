@@ -81,15 +81,17 @@ export async function computeStatement(projectId, periodStart, periodEnd) {
   }
 
   // Vận chuyển — CHỈ tính phiếu dùng xe công ty (có company_vehicle_id), gộp theo
-  // TỪNG XE (biển số cụ thể): số chuyến + tổng phí mỗi xe.
+  // TỪNG XE (biển số cụ thể): số chuyến + tổng phí mỗi xe, GIỮ LẠI chi tiết từng
+  // chuyến (ngày, mã PGN, đơn giá) để in ra chứng minh được với khách hàng.
   const transportByVehicle = {};
   (arrivals ?? [])
     .filter(n => n.transport_fee && n.company_vehicle_id && n.ngay_ky >= periodStart && n.ngay_ky <= periodEnd)
     .forEach(n => {
       const key = n.company_vehicle_id;
-      if (!transportByVehicle[key]) transportByVehicle[key] = { company_vehicle_id: n.company_vehicle_id, soChuyen: 0, thanhTien: 0 };
+      if (!transportByVehicle[key]) transportByVehicle[key] = { company_vehicle_id: n.company_vehicle_id, soChuyen: 0, thanhTien: 0, trips: [] };
       transportByVehicle[key].soChuyen += 1;
       transportByVehicle[key].thanhTien += Number(n.transport_fee);
+      transportByVehicle[key].trips.push({ ngay: n.ngay_ky, code: n.code, fee: Number(n.transport_fee) });
     });
   const transportItems = Object.values(transportByVehicle);
   const transportSubtotal = transportItems.reduce((s, t) => s + t.thanhTien, 0);
@@ -108,6 +110,7 @@ export async function saveStatement(billingPeriodId, projectId, computed, vatRat
     project_id: projectId,
     rental_subtotal: computed.rentalSubtotal,
     transport_subtotal: computed.transportSubtotal,
+    transport_detail: computed.transportItems,
     adjustment_note: adjustment?.note ?? null,
     adjustment_amount: adjustmentAmount,
     tong_phat_sinh: tongPhatSinh,
