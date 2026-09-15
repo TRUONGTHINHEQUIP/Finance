@@ -34,14 +34,14 @@ export async function render(container, profile, isStale = () => false) {
     </div>
   `;
 
-  const [{ data: c }, { data: p }, { data: g }, { data: vt }] = await Promise.all([
+  const [{ data: c }, { data: p }, { data: g }, { data: cv }] = await Promise.all([
     supabase.from('categories').select('*'),
     supabase.from('projects').select('*, partners(name)').eq('status', 'active').order('name'),
     supabase.from('groups').select('*').order('id'),
-    supabase.from('vehicle_types').select('*'),
+    supabase.from('company_vehicles').select('*, vehicle_types(name)'),
   ]);
   if (isStale()) return;
-  const categories = c ?? [], projects = p ?? [], groups = g ?? [], vehicleTypes = vt ?? [];
+  const categories = c ?? [], projects = p ?? [], groups = g ?? [], companyVehicles = cv ?? [];
 
   container.querySelector('#bkProject').innerHTML = projects.map(p => `<option value="${p.id}">${p.name} (${p.partners?.name ?? ''})</option>`).join('');
   container.querySelector('#bkFrom').value = addDaysStr(todayStr(), -30);
@@ -49,7 +49,10 @@ export async function render(container, profile, isStale = () => false) {
 
   const catById = (id) => categories.find(c => c.id === id);
   const catName = (id) => catById(id)?.name ?? '(?)';
-  const vehicleName = (id) => vehicleTypes.find(v => v.id === id)?.name ?? 'Khác / không rõ loại xe';
+  const vehicleLabel = (id) => {
+    const v = companyVehicles.find(x => x.id === id);
+    return v ? `${v.bien_so} — ${v.vehicle_types?.name ?? 'chưa rõ loại'}` : '(xe đã xóa)';
+  };
 
   function renderHierarchicalRentalRows(lines) {
     if (lines.length === 0) return '<tr><td colspan="9" class="empty-state">Không có phiếu chính thức nào trong khoảng thời gian này</td></tr>';
@@ -104,10 +107,10 @@ export async function render(container, profile, isStale = () => false) {
   }
 
   function renderTransportRows(transportItems) {
-    if (!transportItems || transportItems.length === 0) return '';
+    if (!transportItems || transportItems.length === 0) return ''; // không có xe công ty nào chạy trong kỳ -> không hiện Nhóm F
     const total = transportItems.reduce((s, t) => s + t.thanhTien, 0);
     const rows = transportItems.map(t => `<tr>
-      <td>${esc(vehicleName(t.loai_xe_id))}</td>
+      <td>${esc(vehicleLabel(t.company_vehicle_id))}</td>
       <td class="num">${t.soChuyen}</td>
       <td class="num">${fmtVND(t.thanhTien / t.soChuyen)}</td>
       <td class="num">${fmtVND(t.thanhTien)}</td>
@@ -116,7 +119,7 @@ export async function render(container, profile, isStale = () => false) {
     return `
       <div style="font-weight:700; margin-top:16px; background:var(--gray-tint); padding:8px 12px;">NHÓM F — VẬN CHUYỂN (xe công ty)</div>
       <table style="margin-top:0;">
-        <thead><tr><th>Loại xe</th><th class="num">Số chuyến</th><th class="num">Đơn giá bình quân/chuyến</th><th class="num">Thành tiền</th></tr></thead>
+        <thead><tr><th>Xe (biển số — loại xe)</th><th class="num">Số chuyến</th><th class="num">Đơn giá bình quân/chuyến</th><th class="num">Thành tiền</th></tr></thead>
         <tbody>${rows}</tbody>
         <tfoot><tr><td colspan="3">Tổng vận chuyển</td><td class="num">${fmtVND(total)}</td></tr></tfoot>
       </table>`;
