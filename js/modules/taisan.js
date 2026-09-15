@@ -1,8 +1,9 @@
 // js/modules/taisan.js
-// Nguyen tac cot loi: TONG SO HUU = TAI KHO + DANG TAI DU AN + CAN BAO TRI, luon
-// dung theo cong thuc nay. "Tai kho" va "Can bao tri" lay tu asset_units. "Dang
-// tai du an" tinh tu chinh cac phieu giao nhan da CHINH THUC (den tru di, giong
-// het cach billing.js tinh) - khong dung trang thai tai_du_an trong asset_units.
+// Nguyen tac cot loi: TONG SO HUU = TAI KHO + DANG TAI DU AN, luon dung theo
+// cong thuc nay. "Tai kho" lay tu asset_units. "Dang tai du an" tinh tu chinh
+// cac phieu giao nhan da CHINH THUC (den tru di, giong het cach billing.js tinh)
+// - khong dung trang thai tai_du_an trong asset_units.
+// (Tinh nang "can bao tri" tam thoi bo - chua co man hinh nao de danh dau.)
 import { supabase } from '../core/config.js';
 import { fmtNum, fmtVND, todayStr, esc } from '../core/utils.js';
 import { openModal, closeModal } from '../core/modal.js';
@@ -10,7 +11,7 @@ import { openModal, closeModal } from '../core/modal.js';
 export async function render(container, profile, isStale = () => false) {
   container.innerHTML = `
     <div class="page-head">
-      <div><h1>Tài sản</h1><div class="sub">Tổng tài sản sở hữu = tại kho + đang tại dự án + cần bảo trì</div></div>
+      <div><h1>Tài sản</h1><div class="sub">Tổng tài sản sở hữu = tại kho + đang tại dự án</div></div>
       <button class="btn" id="btnAddAsset">+ Thêm tài sản</button>
     </div>
     <div class="toolbar" style="border-bottom:1px solid var(--line); padding-bottom:14px;">
@@ -61,8 +62,7 @@ export async function render(container, profile, isStale = () => false) {
     return projectRowsFor(categoryId).reduce((s, r) => s + r.qty, 0);
   }
   const khoQty = (categoryId) => summary.filter(r => r.category_id === categoryId && r.status === 'kho').reduce((s, r) => s + r.qty, 0);
-  const baoTriQty = (categoryId) => summary.filter(r => r.category_id === categoryId && r.status === 'can_bao_tri').reduce((s, r) => s + r.qty, 0);
-  const totalOwned = (categoryId) => khoQty(categoryId) + totalDeployed(categoryId) + baoTriQty(categoryId);
+  const totalOwned = (categoryId) => khoQty(categoryId) + totalDeployed(categoryId);
 
   const expandedGroups = new Set();
 
@@ -122,10 +122,9 @@ export async function render(container, profile, isStale = () => false) {
 
   function openCategoryDetailModal(category) {
     const kho = khoQty(category.id);
-    const baoTri = baoTriQty(category.id);
     const atProjects = projectRowsFor(category.id).sort((a, b) => b.qty - a.qty);
     const atProjectsTotal = atProjects.reduce((s, r) => s + r.qty, 0);
-    const owned = kho + atProjectsTotal + baoTri;
+    const owned = kho + atProjectsTotal;
     const totalValue = owned * (category.ref_value ?? 0);
 
     const projectRows = atProjects.map((r, i) => {
@@ -145,8 +144,7 @@ export async function render(container, profile, isStale = () => false) {
         Đơn giá TS: <b>${fmtVND(category.ref_value)}</b>/${esc(category.unit)} &nbsp;·&nbsp;
         <b style="color:var(--ink);">Tổng tài sản sở hữu: ${fmtNum(owned)} ${esc(category.unit)}</b> (giá trị <b>${fmtVND(totalValue)}</b>)<br>
         = Tại kho: <b>${fmtNum(kho)}</b> &nbsp;+&nbsp;
-        Đang tại dự án: <b>${fmtNum(atProjectsTotal)}</b> (${atProjects.length} dự án) &nbsp;+&nbsp;
-        Cần bảo trì: <b>${fmtNum(baoTri)}</b>
+        Đang tại dự án: <b>${fmtNum(atProjectsTotal)}</b> (${atProjects.length} dự án)
       </div>
       <b>Đang nằm tại các dự án:</b>
       <table style="margin-top:6px;">
