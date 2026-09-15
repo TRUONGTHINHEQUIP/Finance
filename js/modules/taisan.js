@@ -36,54 +36,54 @@ export async function render(container, profile, isStale = () => false) {
     return 'Cần bảo trì';
   }
 
+  const expandedGroups = new Set();
+
   function renderGroupTable() {
-    const rows = groupList.map(g => {
-      const catsInGroup = catList.filter(c => c.group_id === g.id);
+    let rowsHtml = '';
+    groupList.forEach(g => {
+      const catsInGroup = catList.filter(c => c.group_id === g.id).sort((a, b) => a.name.localeCompare(b.name));
       const totalQty = catsInGroup.reduce((s, c) => s + qtyByCategory(c.id), 0);
       const totalValue = catsInGroup.reduce((s, c) => s + qtyByCategory(c.id) * (c.ref_value ?? 0), 0);
-      return `<tr data-open-group="${g.id}" style="cursor:pointer;">
-        <td><b style="color:var(--red-dark);">${g.id}</b></td>
+      const isOpen = expandedGroups.has(g.id);
+
+      rowsHtml += `<tr data-toggle-group="${g.id}" style="cursor:pointer; background:var(--gray-tint); font-weight:600;">
+        <td style="color:var(--red-dark);">${isOpen ? '▾' : '▸'}&nbsp;${g.id}</td>
         <td>${esc(g.name)}</td>
-        <td class="num">${catsInGroup.length}</td>
-        <td class="num">${fmtNum(totalQty)}</td>
+        <td class="num">${totalQty ? fmtNum(totalQty) : ''}</td>
+        <td style="color:var(--ink-soft); font-weight:400;">${catsInGroup.length} chủng loại</td>
         <td class="num">${fmtVND(totalValue)}</td>
       </tr>`;
-    }).join('');
+
+      if (isOpen) {
+        catsInGroup.forEach(c => {
+          const qty = qtyByCategory(c.id);
+          const value = qty * (c.ref_value ?? 0);
+          rowsHtml += `<tr data-open-cat="${c.id}" style="cursor:pointer;">
+            <td></td>
+            <td style="padding-left:26px;">${esc(c.name)} <span style="color:var(--ink-soft); font-size:.78rem;">(${esc(c.unit)})</span></td>
+            <td class="num">${fmtNum(qty)}</td>
+            <td class="num">${fmtVND(c.ref_value)}</td>
+            <td class="num">${fmtVND(value)}</td>
+          </tr>`;
+        });
+        if (catsInGroup.length === 0) {
+          rowsHtml += `<tr><td></td><td colspan="4" class="empty-state">Chưa có chủng loại nào trong nhóm này</td></tr>`;
+        }
+      }
+    });
 
     container.querySelector('#groupTable').innerHTML = `
-      <thead><tr><th style="width:60px;">Nhóm</th><th>Tên nhóm</th><th class="num">Số chủng loại</th><th class="num">Tổng số lượng</th><th class="num">Tổng giá trị</th></tr></thead>
-      <tbody>${rows || '<tr><td colspan="5" class="empty-state">Chưa có nhóm hàng nào</td></tr>'}</tbody>`;
+      <thead><tr><th style="width:70px;">Nhóm</th><th>Tên</th><th class="num">SL</th><th>Đơn giá / Ghi chú</th><th class="num">Thành tiền</th></tr></thead>
+      <tbody>${rowsHtml || '<tr><td colspan="5" class="empty-state">Chưa có nhóm hàng nào</td></tr>'}</tbody>`;
 
-    container.querySelectorAll('[data-open-group]').forEach(tr => {
-      tr.addEventListener('click', () => openGroupModal(groupList.find(g => g.id === tr.dataset.openGroup)));
+    container.querySelectorAll('[data-toggle-group]').forEach(tr => {
+      tr.addEventListener('click', () => {
+        const id = tr.dataset.toggleGroup;
+        if (expandedGroups.has(id)) expandedGroups.delete(id); else expandedGroups.add(id);
+        renderGroupTable();
+      });
     });
-  }
-
-  function openGroupModal(group) {
-    const cats = catList.filter(c => c.group_id === group.id).sort((a, b) => a.name.localeCompare(b.name));
-
-    const rows = cats.map((c, i) => {
-      const qty = qtyByCategory(c.id);
-      const value = qty * (c.ref_value ?? 0);
-      return `<tr data-open-cat="${c.id}" style="cursor:pointer;">
-        <td>${i + 1}</td>
-        <td>${esc(c.name)}</td>
-        <td>${esc(c.unit)}</td>
-        <td class="num">${fmtVND(c.ref_value)}</td>
-        <td class="num">${fmtNum(qty)}</td>
-        <td class="num">${fmtVND(value)}</td>
-      </tr>`;
-    }).join('');
-
-    const bodyHtml = `
-      <table>
-        <thead><tr><th style="width:40px;">STT</th><th>Tên thiết bị &amp; quy cách</th><th>ĐVT</th><th class="num">Trị giá TS</th><th class="num">Tổng SL</th><th class="num">Thành tiền</th></tr></thead>
-        <tbody>${rows || '<tr><td colspan="6" class="empty-state">Chưa có chủng loại nào trong nhóm này</td></tr>'}</tbody>
-      </table>
-    `;
-    const dialog = openModal({ title: `${group.id} — ${group.name}`, bodyHtml, footerHtml: '', wide: true });
-
-    dialog.querySelectorAll('[data-open-cat]').forEach(tr => {
+    container.querySelectorAll('[data-open-cat]').forEach(tr => {
       tr.addEventListener('click', () => openCategoryDetailModal(catList.find(c => c.id === tr.dataset.openCat)));
     });
   }
