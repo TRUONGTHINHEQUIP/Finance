@@ -6,14 +6,14 @@ import { computeStatement, saveStatement, findClosedStatement, getPendingAdjustm
 
 function sourceTypeLabel(type) {
   if (type === 'ton_dau_ky') return 'TỒN ĐẦU KỲ';
-  if (type === 'giam_trong_ky') return 'Rời đi trong kỳ';
-  return 'Phát Sinh Thuê';
+  if (type === 'giam_trong_ky') return 'Phát sinh giảm';
+  return 'Phát sinh tăng';
 }
 
 export async function render(container, profile, isStale = () => false) {
   container.innerHTML = `
     <div class="page-head">
-      <div><h1>Bảng kê</h1><div class="sub">Thuê định kỳ — tính theo ngày ký thật, tồn đầu kỳ + phát sinh thuê</div></div>
+      <div><h1>Bảng kê</h1><div class="sub">Thuê định kỳ — tính theo ngày ký thật, sắp theo nhóm hàng A-E</div></div>
       <button class="btn" id="btnNewAdjustment">+ Tạo dòng điều chỉnh</button>
     </div>
     <div class="toolbar" style="border-bottom:1px solid var(--line); padding-bottom:14px;">
@@ -34,18 +34,93 @@ export async function render(container, profile, isStale = () => false) {
     </div>
   `;
 
-  const [{ data: c }, { data: p }] = await Promise.all([
+  const [{ data: c }, { data: p }, { data: g }, { data: vt }] = await Promise.all([
     supabase.from('categories').select('*'),
     supabase.from('projects').select('*, partners(name)').eq('status', 'active').order('name'),
+    supabase.from('groups').select('*').order('id'),
+    supabase.from('vehicle_types').select('*'),
   ]);
   if (isStale()) return;
-  const categories = c ?? [], projects = p ?? [];
+  const categories = c ?? [], projects = p ?? [], groups = g ?? [], vehicleTypes = vt ?? [];
 
   container.querySelector('#bkProject').innerHTML = projects.map(p => `<option value="${p.id}">${p.name} (${p.partners?.name ?? ''})</option>`).join('');
   container.querySelector('#bkFrom').value = addDaysStr(todayStr(), -30);
   container.querySelector('#bkTo').value = todayStr();
 
-  const catName = (id) => categories.find(c => c.id === id)?.name ?? '(?)';
+  const catById = (id) => categories.find(c => c.id === id);
+  const catName = (id) => catById(id)?.name ?? '(?)';
+  const vehicleName = (id) => vehicleTypes.find(v => v.id === id)?.name ?? 'Khác / không rõ loại xe';
+
+  function renderHierarchicalRentalRows(lines) {
+    if (lines.length === 0) return '<tr><td colspan="9" class="empty-state">Không có phiếu chính thức nào trong khoảng thời gian này</td></tr>';
+
+    const byCategory = {};
+    lines.forEach(l => { (byCategory[l.category_id] ??= []).push(l); });
+
+    const byGroup = {};
+    Object.keys(byCategory).forEach(catId => {
+      const cat = catById(catId);
+      const groupId = cat?.group_id ?? '?';
+      (byGroup[groupId] ??= []).push(catId);
+    });
+    Object.values(byGroup).forEach(catIds => catIds.sort((a, b) => (catName(a)).localeCompare(catName(b))));
+
+    let stt = 0;
+    let html = '';
+    groups.filter(g => byGroup[g.id]).forEach(g => {
+      const catIds = byGroup[g.id];
+      const groupTotal = catIds.reduce((s, catId) => s + byCategory[catId].reduce((s2, l) => s2 + l.thanh_tien, 0), 0);
+
+      html += `<tr style="background:var(--gray-tint); font-weight:700;">
+        <td colspan="7">NHÓM ${g.id} — ${esc(g.name).toUpperCase()}</td>
+        <td class="num" colspan="2">${fmtVND(groupTotal)}</td>
+      </tr>`;
+
+      catIds.forEach(catId => {
+        const cat = catById(catId);
+        const catLines = byCategory[catId].sort((a, b) => a.ngay.localeCompare(b.ngay));
+        const catTotalQty = catLines.reduce((s, l) => s + l.so_luong, 0);
+        const catTotalTien = catLines.reduce((s, l) => s + l.thanh_tien, 0);
+        stt++;
+
+        html += `<tr style="font-weight:600; color:var(--red-dark);">
+          <td>${stt}</td><td></td><td>${esc(cat?.name ?? '(?)')}</td><td>${esc(cat?.unit ?? '')}</td>
+          <td></td><td class="num">${catTotalQty}</td><td></td>
+          <td class="num">${fmtVND(catTotalTien)}</td><td></td>
+        </tr>`;
+
+        catLines.forEach(l => {
+          const isGiam = l.source_type === 'giam_trong_ky';
+          html += `<tr${isGiam ? ' style="color:var(--red-dark);"' : ''}>
+            <td></td><td>${fmtDate(l.ngay)}</td><td style="padding-left:20px;">${sourceTypeLabel(l.source_type)}</td>
+            <td></td><td class="num">${l.so_ngay}</td><td class="num">${l.so_luong}</td>
+            <td class="num">${fmtVND(l.don_gia)}</td><td class="num">${fmtVND(l.thanh_tien)}</td>
+            <td>${l.note_code ? esc(l.note_code) : '—'}</td>
+          </tr>`;
+        });
+      });
+    });
+    return html;
+  }
+
+  function renderTransportRows(transportItems) {
+    if (!transportItems || transportItems.length === 0) return '';
+    const total = transportItems.reduce((s, t) => s + t.thanhTien, 0);
+    const rows = transportItems.map(t => `<tr>
+      <td>${esc(vehicleName(t.loai_xe_id))}</td>
+      <td class="num">${t.soChuyen}</td>
+      <td class="num">${fmtVND(t.thanhTien / t.soChuyen)}</td>
+      <td class="num">${fmtVND(t.thanhTien)}</td>
+    </tr>`).join('');
+
+    return `
+      <div style="font-weight:700; margin-top:16px; background:var(--gray-tint); padding:8px 12px;">NHÓM F — VẬN CHUYỂN (xe công ty)</div>
+      <table style="margin-top:0;">
+        <thead><tr><th>Loại xe</th><th class="num">Số chuyến</th><th class="num">Đơn giá bình quân/chuyến</th><th class="num">Thành tiền</th></tr></thead>
+        <tbody>${rows}</tbody>
+        <tfoot><tr><td colspan="3">Tổng vận chuyển</td><td class="num">${fmtVND(total)}</td></tr></tfoot>
+      </table>`;
+  }
 
   function openNewAdjustmentModal() {
     const bodyHtml = `
@@ -98,31 +173,20 @@ export async function render(container, profile, isStale = () => false) {
     const project = projects.find(p => p.id === projectId);
     const vatRate = 8;
 
-    const rentalRows = computed.lines.map(l => `<tr${l.source_type === 'giam_trong_ky' ? ' style="color:var(--red-dark);"' : ''}>
-      <td>${fmtDate(l.ngay)}</td>
-      <td>${sourceTypeLabel(l.source_type)}</td>
-      <td>${catName(l.category_id)}</td>
-      <td class="num">${l.so_ngay}</td><td class="num">${l.so_luong}</td>
-      <td class="num">${fmtVND(l.don_gia)}</td><td class="num">${fmtVND(l.thanh_tien)}</td>
-    </tr>`).join('') || '<tr><td colspan="7" class="empty-state">Không có phiếu chính thức nào trong khoảng thời gian này</td></tr>';
-
-    const transportRows = computed.transportItems.map(t => `<tr>
-      <td>${fmtDate(t.ngay)}</td><td colspan="5">Chuyến xe theo phiếu ${t.code}</td><td class="num">${fmtVND(t.amount)}</td>
-    </tr>`).join('');
+    const rentalRows = renderHierarchicalRentalRows(computed.lines);
+    const transportHtml = renderTransportRows(computed.transportItems);
 
     const pendingRows = pendingAdjustments.map(a => `<tr>
-      <td>${fmtDate(a.created_at)}</td><td colspan="5">${esc(a.reason)}</td><td class="num">${fmtVND(a.amount)}</td>
+      <td>${fmtDate(a.created_at)}</td><td colspan="6">${esc(a.reason)}</td><td class="num">${fmtVND(a.amount)}</td>
     </tr>`).join('');
 
     output.innerHTML = `
       <div class="panel"><div class="panel-body">
         <h2 style="text-align:center;">BẢNG KÊ GIÁ TRỊ — THUÊ ĐỊNH KỲ</h2>
         <div style="text-align:center; font-weight:600; margin:8px 0 14px;">Dự án: ${project?.name ?? ''} · Từ ${fmtDate(from)} đến ${fmtDate(to)}</div>
-        <table><thead><tr><th>Ngày ký</th><th>Diễn giải</th><th>Chủng loại</th><th class="num">Số ngày</th><th class="num">SL</th><th class="num">Đơn giá</th><th class="num">Thành tiền</th></tr></thead>
+        <table><thead><tr><th style="width:34px;">STT</th><th>Ngày ký</th><th>Diễn giải / Chủng loại</th><th>ĐVT</th><th class="num">Số ngày</th><th class="num">SL</th><th class="num">Đơn giá</th><th class="num">Thành tiền</th><th>Phiếu GN</th></tr></thead>
           <tbody>${rentalRows}</tbody></table>
-        ${computed.transportItems.length ? `
-        <div style="font-weight:600; margin-top:14px; color:var(--red-dark);">Vận chuyển</div>
-        <table><tbody>${transportRows}</tbody></table>` : ''}
+        ${transportHtml}
         ${pendingAdjustments.length ? `
         <div style="font-weight:600; margin-top:14px; color:var(--red-dark);">Điều chỉnh gom từ trước (tự động áp dụng vào kỳ này)</div>
         <table><tbody>${pendingRows}</tbody></table>` : ''}
@@ -224,17 +288,11 @@ export async function render(container, profile, isStale = () => false) {
       .select('*').eq('statement_id', statement.id).order('ngay');
     if (error) { alert('Lỗi tải chi tiết: ' + error.message); return; }
 
-    const rows = (lines ?? []).map(l => `<tr${l.source_type === 'giam_trong_ky' ? ' style="color:var(--red-dark);"' : ''}>
-      <td>${fmtDate(l.ngay)}</td>
-      <td>${sourceTypeLabel(l.source_type)}</td>
-      <td>${esc(catName(l.category_id))}</td>
-      <td class="num">${l.so_ngay}</td><td class="num">${l.so_luong}</td>
-      <td class="num">${fmtVND(l.don_gia)}</td><td class="num">${fmtVND(l.thanh_tien)}</td>
-    </tr>`).join('') || '<tr><td colspan="7" class="empty-state">Không có dòng chi tiết</td></tr>';
+    const rows = renderHierarchicalRentalRows(lines ?? []);
 
     const bodyHtml = `
       <div style="margin-bottom:10px;">${statement.status === 'closed' ? '<span class="badge chinh">Đã chốt</span>' : '<span class="badge tam">Nháp</span>'}</div>
-      <table><thead><tr><th>Ngày ký</th><th>Diễn giải</th><th>Chủng loại</th><th class="num">Số ngày</th><th class="num">SL</th><th class="num">Đơn giá</th><th class="num">Thành tiền</th></tr></thead>
+      <table><thead><tr><th style="width:34px;">STT</th><th>Ngày ký</th><th>Diễn giải / Chủng loại</th><th>ĐVT</th><th class="num">Số ngày</th><th class="num">SL</th><th class="num">Đơn giá</th><th class="num">Thành tiền</th><th>Phiếu GN</th></tr></thead>
         <tbody>${rows}</tbody></table>
       <table style="margin-top:10px;">
         <tr><td style="border:none;width:70%"></td><td style="border:none;">Tiền thuê</td><td class="num" style="border:none;">${fmtVND(statement.rental_subtotal)}</td></tr>
