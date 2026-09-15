@@ -162,10 +162,15 @@ export async function render(container, profile, isStale = () => false) {
     const vatAmount = tongPhatSinh * (vatRate / 100);
     const total = tongPhatSinh + vatAmount;
 
-    // Gom theo chủng loại, đánh số PHẲNG 1,2,3... không nhóm theo A-E — đúng bill mẫu thật
+    // Gom theo chủng loại, RỒI gom theo nhóm A-E — đúng cách sắp xếp bên trang web
     const byCategory = {};
     computed.lines.forEach(l => { (byCategory[l.category_id] ??= []).push(l); });
-    const catIds = Object.keys(byCategory).sort((a, b) => catName(a).localeCompare(catName(b)));
+    const byGroupExport = {};
+    Object.keys(byCategory).forEach(catId => {
+      const groupId = catById(catId)?.group_id ?? '?';
+      (byGroupExport[groupId] ??= []).push(catId);
+    });
+    Object.values(byGroupExport).forEach(ids => ids.sort((a, b) => catName(a).localeCompare(catName(b))));
 
     const rows = [];
     const styledCells = []; // {ref, style}
@@ -200,19 +205,30 @@ export async function render(container, profile, isStale = () => false) {
     pushRow(['STT', 'Ngày tháng', 'Diễn giải trong kỳ', 'ĐVT', 'Số ngày thuê', 'Số lượng', 'Đơn giá', 'Thành tiền', 'Phiếu GN', 'Nơi X-N']);
     for (let col = 0; col < 10; col++) styleCell(headerRowIdx, col, grayFill);
 
-    catIds.forEach((catId, idx) => {
-      const cat = catById(catId);
-      const catLines = byCategory[catId].sort((a, b) => a.ngay.localeCompare(b.ngay));
-      const catTotalQty = catLines.reduce((s, l) => s + l.so_luong, 0);
-      const catTotalTien = catLines.reduce((s, l) => s + l.thanh_tien, 0);
+    let stt = 0;
+    groups.filter(g => byGroupExport[g.id]).forEach(g => {
+      const catIds = byGroupExport[g.id];
+      const groupTotal = catIds.reduce((s, catId) => s + byCategory[catId].reduce((s2, l) => s2 + l.thanh_tien, 0), 0);
 
-      const summaryRowIdx = r;
-      pushRow([idx + 1, '', cat?.name ?? '(?)', cat?.unit ?? '', '', catTotalQty, '', catTotalTien, 'CK', '']);
-      for (let col = 0; col < 10; col++) styleCell(summaryRowIdx, col, boldRed);
+      const groupRowIdx = r;
+      pushRow([`NHÓM ${g.id} — ${g.name.toUpperCase()}`, '', '', '', '', '', '', groupTotal, '', '']);
+      for (let col = 0; col < 10; col++) styleCell(groupRowIdx, col, grayFill);
 
-      catLines.forEach(l => {
-        const isTonDauKy = l.source_type === 'ton_dau_ky';
-        pushRow(['', fmtDate(l.ngay), sourceTypeLabel(l.source_type), '', l.so_ngay, l.so_luong, l.don_gia, l.thanh_tien, l.note_code ?? '', isTonDauKy ? 'ĐK' : (project.code ?? '')]);
+      catIds.forEach(catId => {
+        const cat = catById(catId);
+        const catLines = byCategory[catId].sort((a, b) => a.ngay.localeCompare(b.ngay));
+        const catTotalQty = catLines.reduce((s, l) => s + l.so_luong, 0);
+        const catTotalTien = catLines.reduce((s, l) => s + l.thanh_tien, 0);
+        stt++;
+
+        const summaryRowIdx = r;
+        pushRow([stt, '', cat?.name ?? '(?)', cat?.unit ?? '', '', catTotalQty, '', catTotalTien, 'CK', '']);
+        for (let col = 0; col < 10; col++) styleCell(summaryRowIdx, col, boldRed);
+
+        catLines.forEach(l => {
+          const isTonDauKy = l.source_type === 'ton_dau_ky';
+          pushRow(['', fmtDate(l.ngay), sourceTypeLabel(l.source_type), '', l.so_ngay, l.so_luong, l.don_gia, l.thanh_tien, l.note_code ?? '', isTonDauKy ? 'ĐK' : (project.code ?? '')]);
+        });
       });
     });
 
