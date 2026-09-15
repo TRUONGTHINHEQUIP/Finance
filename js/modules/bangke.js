@@ -10,6 +10,19 @@ function sourceTypeLabel(type) {
   return 'Phát sinh tăng';
 }
 
+function loadScriptOnce(src) {
+  return new Promise((resolve, reject) => {
+    if (window.XLSX) { resolve(window.XLSX); return; }
+    const existing = document.querySelector(`script[src="${src}"]`);
+    if (existing) { existing.addEventListener('load', () => resolve(window.XLSX)); return; }
+    const script = document.createElement('script');
+    script.src = src;
+    script.onload = () => resolve(window.XLSX);
+    script.onerror = () => reject(new Error('Không tải được thư viện xuất Excel — kiểm tra kết nối mạng.'));
+    document.head.appendChild(script);
+  });
+}
+
 export async function render(container, profile, isStale = () => false) {
   container.innerHTML = `
     <div class="page-head">
@@ -34,14 +47,15 @@ export async function render(container, profile, isStale = () => false) {
     </div>
   `;
 
-  const [{ data: c }, { data: p }, { data: g }, { data: cv }] = await Promise.all([
+  const [{ data: c }, { data: p }, { data: g }, { data: cv }, { data: ci }] = await Promise.all([
     supabase.from('categories').select('*'),
-    supabase.from('projects').select('*, partners(name)').eq('status', 'active').order('name'),
+    supabase.from('projects').select('*, partners(*)').eq('status', 'active').order('name'),
     supabase.from('groups').select('*').order('id'),
     supabase.from('company_vehicles').select('*, vehicle_types(name)'),
+    supabase.from('company_info').select('*').limit(1).maybeSingle(),
   ]);
   if (isStale()) return;
-  const categories = c ?? [], projects = p ?? [], groups = g ?? [], companyVehicles = cv ?? [];
+  const categories = c ?? [], projects = p ?? [], groups = g ?? [], companyVehicles = cv ?? [], companyInfo = ci ?? {};
 
   container.querySelector('#bkProject').innerHTML = projects.map(p => `<option value="${p.id}">${p.name} (${p.partners?.name ?? ''})</option>`).join('');
   container.querySelector('#bkFrom').value = addDaysStr(todayStr(), -30);
@@ -135,6 +149,130 @@ export async function render(container, profile, isStale = () => false) {
       </table>`;
   }
 
+  // ================= XUẤT EXCEL — đúng bố cục bill mẫu thật =================
+  async function exportToExcel(project, computed, vatRate, adjustmentAmount, adjustmentNote, from, to) {
+    let XLSX;
+    try { XLSX = await loadScriptOnce('https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js'); }
+    catch (e) { alert(e.message); return; }
+
+    const partner = project.partners ?? {};
+    const rentalSubtotal = computed.rentalSubtotal;
+    const transportSubtotal = computed.transportSubtotal ?? 0;
+    const tongPhatSinh = rentalSubtotal + transportSubtotal + (adjustmentAmount ?? 0);
+    const vatAmount = tongPhatSinh * (vatRate / 100);
+    const total = tongPhatSinh + vatAmount;
+
+    // Gom theo chủng loại, đánh số PHẲNG 1,2,3... không nhóm theo A-E — đúng bill mẫu thật
+    const byCategory = {};
+    computed.lines.forEach(l => { (byCategory[l.category_id] ??= []).push(l); });
+    const catIds = Object.keys(byCategory).sort((a, b) => catName(a).localeCompare(catName(b)));
+
+    const rows = [];
+    const styledCells = []; // {ref, style}
+    let r = 1; // theo dõi số dòng hiện tại (1-based) để merge/style đúng vị trí
+
+    function pushRow(arr) { rows.push(arr); r++; }
+    function styleCell(row, col, style) { styledCells.push({ ref: XLSX.utils.encode_cell({ r: row - 1, c: col }), style }); }
+
+    const boldRed = { font: { bold: true, color: { rgb: 'C00000' } } };
+    const bold = { font: { bold: true } };
+    const grayFill = { fill: { fgColor: { rgb: 'F2F2F2' } }, font: { bold: true } };
+    const centerBold14 = { font: { bold: true, sz: 14 }, alignment: { horizontal: 'center' } };
+    const italic = { font: { italic: true } };
+
+    pushRow(['BÊN CHO THUÊ:', '', '', '', '', 'BÊN THUÊ:', '', '', '', '']);
+    styleCell(1, 0, bold); styleCell(1, 5, bold);
+    pushRow([companyInfo.name ?? 'CÔNG TY TNHH GIẢI PHÁP THI CÔNG TRƯỜNG THỊNH', '', '', '', '', partner.name ?? '', '', '', '', '']);
+    styleCell(2, 0, bold); styleCell(2, 5, bold);
+    pushRow([`Địa chỉ: ${companyInfo.address ?? '19 Đường số 3, Khu nhà ở Hưng Phú, KP1, P.Tam Phú, TP Thủ Đức, TP.HCM'}`, '', '', '', '', `Địa chỉ: ${partner.address ?? ''}`, '', '', '', '']);
+    pushRow([`MST: ${companyInfo.mst ?? '0317171798'}   ĐT: ${companyInfo.phone ?? '0937 261 862'}`, '', '', '', '', `MST: ${partner.mst ?? ''}`, '', '', '', '']);
+    pushRow(['', '', '', '', '', '', '', '', '', '']);
+    pushRow([`Hợp đồng nguyên tắc thuê thiết bị xây dựng số: ${partner.hop_dong_so ?? ''}, ký ngày ${partner.hop_dong_ngay ? fmtDate(partner.hop_dong_ngay) : ''}`, '', '', '', '', 'Từ ngày:', fmtDate(from), 'Đến ngày:', fmtDate(to), '']);
+    styleCell(6, 5, italic); styleCell(6, 7, italic);
+    pushRow(['', '', '', '', '', '', '', '', '', '']);
+    pushRow(['BẢNG TÍNH TIỀN THUÊ THIẾT BỊ', '', '', '', '', '', '', '', '', '']);
+    styleCell(8, 0, centerBold14);
+    pushRow([`Công trình: ${project.name}`, '', '', '', '', '', '', '', '', '']);
+    styleCell(9, 0, { font: { bold: true }, alignment: { horizontal: 'center' } });
+    pushRow(['', '', '', '', '', '', '', '', '', '']);
+
+    const headerRowIdx = r;
+    pushRow(['STT', 'Ngày tháng', 'Diễn giải trong kỳ', 'ĐVT', 'Số ngày thuê', 'Số lượng', 'Đơn giá', 'Thành tiền', 'Phiếu GN', 'Nơi X-N']);
+    for (let col = 0; col < 10; col++) styleCell(headerRowIdx, col, grayFill);
+
+    catIds.forEach((catId, idx) => {
+      const cat = catById(catId);
+      const catLines = byCategory[catId].sort((a, b) => a.ngay.localeCompare(b.ngay));
+      const catTotalQty = catLines.reduce((s, l) => s + l.so_luong, 0);
+      const catTotalTien = catLines.reduce((s, l) => s + l.thanh_tien, 0);
+
+      const summaryRowIdx = r;
+      pushRow([idx + 1, '', cat?.name ?? '(?)', cat?.unit ?? '', '', catTotalQty, '', catTotalTien, 'CK', '']);
+      for (let col = 0; col < 10; col++) styleCell(summaryRowIdx, col, boldRed);
+
+      catLines.forEach(l => {
+        const isTonDauKy = l.source_type === 'ton_dau_ky';
+        pushRow(['', fmtDate(l.ngay), sourceTypeLabel(l.source_type), '', l.so_ngay, l.so_luong, l.don_gia, l.thanh_tien, l.note_code ?? '', isTonDauKy ? 'ĐK' : (project.code ?? '')]);
+      });
+    });
+
+    if (computed.transportItems && computed.transportItems.length > 0) {
+      pushRow(['', '', '', '', '', '', '', '', '', '']);
+      const tHeaderIdx = r;
+      pushRow(['NHÓM F — VẬN CHUYỂN (xe công ty)', '', '', '', '', '', '', '', '', '']);
+      styleCell(tHeaderIdx, 0, grayFill);
+      computed.transportItems.forEach(t => {
+        const summaryRowIdx = r;
+        pushRow(['', '', vehicleLabel(t.company_vehicle_id), '', '', t.soChuyen, '', t.thanhTien, '', '']);
+        for (let col = 0; col < 10; col++) styleCell(summaryRowIdx, col, boldRed);
+        (t.trips ?? []).forEach(trip => {
+          pushRow(['', fmtDate(trip.ngay), 'Chuyến vận chuyển', '', '', 1, trip.fee, trip.fee, trip.code, '']);
+        });
+      });
+    }
+
+    pushRow(['', '', '', '', '', '', '', '', '', '']);
+    if (adjustmentAmount) {
+      pushRow(['', '', `Điều chỉnh${adjustmentNote ? ' — ' + adjustmentNote : ''}`, '', '', '', '', adjustmentAmount, '', '']);
+    }
+    const totalRowIdx = r;
+    pushRow(['', '', '', '', '', '', 'TỔNG PHÁT SINH TRONG KỲ', tongPhatSinh, '', '']);
+    styleCell(totalRowIdx, 6, bold); styleCell(totalRowIdx, 7, bold);
+    const vatRowIdx = r;
+    pushRow(['', '', '', '', '', '', `THUẾ VAT (${vatRate}%)`, vatAmount, '', '']);
+    styleCell(vatRowIdx, 6, bold); styleCell(vatRowIdx, 7, bold);
+    const grandRowIdx = r;
+    pushRow(['', '', '', '', '', '', 'TỔNG THANH TOÁN', total, '', '']);
+    for (let col = 6; col <= 7; col++) styleCell(grandRowIdx, col, boldRed);
+
+    pushRow(['', '', '', '', '', '', '', '', '', '']);
+    pushRow(['', '', '', '', '', '', '', '', '', '']);
+    const signRowIdx = r;
+    pushRow(['BÊN CHO THUÊ', '', '', '', '', 'BÊN THUÊ', '', '', '', '']);
+    styleCell(signRowIdx, 0, { font: { bold: true }, alignment: { horizontal: 'center' } });
+    styleCell(signRowIdx, 5, { font: { bold: true }, alignment: { horizontal: 'center' } });
+    pushRow(['(Ký, ghi rõ họ tên)', '', '', '', '', '(Ký, ghi rõ họ tên)', '', '', '', '']);
+
+    const ws = XLSX.utils.aoa_to_sheet(rows);
+    ws['!cols'] = [{ wch: 6 }, { wch: 12 }, { wch: 26 }, { wch: 7 }, { wch: 10 }, { wch: 12 }, { wch: 12 }, { wch: 15 }, { wch: 14 }, { wch: 10 }];
+    ws['!merges'] = [
+      { s: { r: 0, c: 0 }, e: { r: 0, c: 3 } }, { s: { r: 0, c: 5 }, e: { r: 0, c: 9 } },
+      { s: { r: 1, c: 0 }, e: { r: 1, c: 3 } }, { s: { r: 1, c: 5 }, e: { r: 1, c: 9 } },
+      { s: { r: 2, c: 0 }, e: { r: 2, c: 3 } }, { s: { r: 2, c: 5 }, e: { r: 2, c: 9 } },
+      { s: { r: 3, c: 0 }, e: { r: 3, c: 3 } }, { s: { r: 3, c: 5 }, e: { r: 3, c: 9 } },
+      { s: { r: 5, c: 0 }, e: { r: 5, c: 4 } },
+      { s: { r: 7, c: 0 }, e: { r: 7, c: 9 } }, { s: { r: 8, c: 0 }, e: { r: 8, c: 9 } },
+      { s: { r: signRowIdx - 1, c: 0 }, e: { r: signRowIdx - 1, c: 3 } }, { s: { r: signRowIdx - 1, c: 5 }, e: { r: signRowIdx - 1, c: 9 } },
+      { s: { r: signRowIdx, c: 0 }, e: { r: signRowIdx, c: 3 } }, { s: { r: signRowIdx, c: 5 }, e: { r: signRowIdx, c: 9 } },
+    ];
+    styledCells.forEach(({ ref, style }) => { if (ws[ref]) ws[ref].s = style; });
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'BangKe');
+    const fileName = `BangKe_${project.name.replace(/[^a-zA-Z0-9]/g, '')}_${from}_${to}.xlsx`;
+    XLSX.writeFile(wb, fileName);
+  }
+
   function openNewAdjustmentModal() {
     const bodyHtml = `
       <div class="info-box">Dòng này sẽ tự động được gom vào lần tính bill KẾ TIẾP của đúng dự án được chọn — không đụng vào bill cũ đã chốt.</div>
@@ -216,6 +354,7 @@ export async function render(container, profile, isStale = () => false) {
 
         <div class="note-box">Đây là bảng kê giá trị (không phải hóa đơn điện tử) — dùng làm căn cứ để Sale xuất hóa đơn thật và BGD xem thống kê.</div>
         <div style="display:flex; gap:10px;">
+          <button class="btn secondary" id="bkExportExcel">Xuất Excel</button>
           <button class="btn secondary" id="bkSaveDraft">Lưu nháp</button>
           <button class="btn" id="bkClose">Chốt kỳ</button>
         </div>
@@ -237,6 +376,13 @@ export async function render(container, profile, isStale = () => false) {
     }
     renderTotals();
     container.querySelector('#bkAdjAmount').addEventListener('input', renderTotals);
+
+    container.querySelector('#bkExportExcel').addEventListener('click', () => {
+      const adjAmount = parseFloat(container.querySelector('#bkAdjAmount').value) || 0;
+      const adjNote = container.querySelector('#bkAdjNote').value.trim();
+      const combinedAdj = pendingSum + adjAmount;
+      exportToExcel(project, computed, vatRate, combinedAdj || null, adjNote || null, from, to);
+    });
 
     async function doSave(close) {
       try {
@@ -275,7 +421,7 @@ export async function render(container, profile, isStale = () => false) {
 
   async function loadHistory() {
     const { data, error } = await supabase.from('billing_statements')
-      .select('*, projects(name)').order('created_at', { ascending: false }).limit(50);
+      .select('*, projects(name), billing_periods(period_start, period_end)').order('created_at', { ascending: false }).limit(50);
     if (isStale()) return;
     const table = container.querySelector('#bkHistoryTable');
     if (error) { table.innerHTML = `<tr><td class="error-box">${error.message}</td></tr>`; return; }
@@ -317,7 +463,20 @@ export async function render(container, profile, isStale = () => false) {
         <tr><td style="border:none;"></td><td style="border:none;font-weight:700;color:var(--red-dark);">Tổng thanh toán</td><td class="num" style="border:none;font-weight:700;color:var(--red-dark);">${fmtVND(statement.total)}</td></tr>
       </table>
     `;
-    openModal({ title: `Bảng kê — ${statement.projects?.name ?? '(?)'}`, bodyHtml, footerHtml: '', wide: true });
+    const footerHtml = `<button class="btn secondary" id="bkExportExcelSaved">Xuất Excel</button>`;
+    const dialog = openModal({ title: `Bảng kê — ${statement.projects?.name ?? '(?)'}`, bodyHtml, footerHtml, wide: true });
+
+    dialog.querySelector('#bkExportExcelSaved').addEventListener('click', () => {
+      const project = projects.find(p => p.id === statement.project_id) ?? { name: statement.projects?.name ?? 'DuAn', partners: {} };
+      const computedLike = {
+        lines: lines ?? [],
+        transportItems: statement.transport_detail ?? [],
+        rentalSubtotal: statement.rental_subtotal,
+        transportSubtotal: statement.transport_subtotal,
+      };
+      exportToExcel(project, computedLike, statement.vat_rate, statement.adjustment_amount, statement.adjustment_note,
+        statement.billing_periods?.period_start ?? todayStr(), statement.billing_periods?.period_end ?? todayStr());
+    });
   }
 
   container.querySelector('#subTao').addEventListener('click', () => {
