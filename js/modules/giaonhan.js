@@ -16,15 +16,16 @@ export async function render(container, profile, isStale = () => false) {
     <div id="phieuList" class="loading">Đang tải...</div>
   `;
 
-  const [{ data: c }, { data: p }, { data: w }, { data: vt }, { data: tc }] = await Promise.all([
+  const [{ data: c }, { data: p }, { data: w }, { data: vt }, { data: tc }, { data: cv }] = await Promise.all([
     supabase.from('categories').select('*').order('name'),
     supabase.from('projects').select('*').eq('status', 'active').order('name'),
     supabase.from('warehouses').select('*').order('name'),
     supabase.from('vehicle_types').select('*').order('name'),
     supabase.from('transport_carriers').select('*').order('name'),
+    supabase.from('company_vehicles').select('*, vehicle_types(name)').order('bien_so'),
   ]);
   if (isStale()) return;
-  const categories = c ?? [], projects = p ?? [], warehouses = w ?? [], vehicleTypes = vt ?? [], carriers = tc ?? [];
+  const categories = c ?? [], projects = p ?? [], warehouses = w ?? [], vehicleTypes = vt ?? [], carriers = tc ?? [], companyVehicles = cv ?? [];
 
   container.querySelector('#gnFilterProject').innerHTML = '<option value="">Tất cả dự án</option>' +
     projects.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
@@ -73,10 +74,20 @@ export async function render(container, profile, isStale = () => false) {
         <div class="field"><label>Người giao (bên xuất)</label><input type="text" id="mNguoiGiao" placeholder="Tên người giao"></div>
         <div class="field"><label>Quản lý duyệt (bên xuất)</label><input type="text" id="mQuanLy" placeholder="Tên quản lý"></div>
       </div>
-      <div class="field-row" style="grid-template-columns:1fr 1fr 1fr;">
+      <div class="field"><label>Loại vận chuyển</label>
+        <select id="mVanChuyenType">
+          <option value="ngoai">Nhà xe ngoài (thuê ngoài)</option>
+          <option value="congty">Xe công ty</option>
+        </select>
+      </div>
+      <div class="field-row" id="mNgoaiFields" style="grid-template-columns:1fr 1fr 1fr;">
         <div class="field"><label>Đơn vị vận chuyển</label><select id="mNhaXe"><option value="">— Chọn —</option>${carriers.map(c => `<option value="${c.id}">${c.name}</option>`).join('')}</select></div>
         <div class="field"><label>Số xe</label><input type="text" id="mBienSo" list="mBienSoList" placeholder="50E-123.45"><datalist id="mBienSoList"></datalist></div>
         <div class="field"><label>Loại xe</label><select id="mLoaiXe"><option value="">— Chọn —</option>${vehicleTypes.map(v => `<option value="${v.id}">${v.name}</option>`).join('')}</select></div>
+      </div>
+      <div class="field" id="mCongTyFields" style="display:none;">
+        <label>Chọn xe công ty</label>
+        <select id="mCompanyVehicle"><option value="">— Chọn —</option>${companyVehicles.map(v => `<option value="${v.id}">${esc(v.bien_so)} — ${esc(v.vehicle_types?.name ?? 'chưa rõ loại')}</option>`).join('')}</select>
       </div>
       <div class="field"><label>Phí vận chuyển (chỉ tính khi Nơi nhập là dự án — nơi nhận hàng sẽ trả phí này)</label><input type="number" id="mTransportFee" placeholder="VD: 5000000"></div>
 
@@ -130,6 +141,12 @@ export async function render(container, profile, isStale = () => false) {
     dialog.querySelector('#mAddRow').addEventListener('click', addRow);
     addRow();
 
+    dialog.querySelector('#mVanChuyenType').addEventListener('change', (e) => {
+      const isCongTy = e.target.value === 'congty';
+      dialog.querySelector('#mNgoaiFields').style.display = isCongTy ? 'none' : 'grid';
+      dialog.querySelector('#mCongTyFields').style.display = isCongTy ? 'block' : 'none';
+    });
+
     dialog.querySelector('#mNhaXe').addEventListener('change', async (e) => {
       const carrierId = e.target.value;
       const listEl = dialog.querySelector('#mBienSoList');
@@ -167,10 +184,21 @@ export async function render(container, profile, isStale = () => false) {
       const ngay_ky = dialog.querySelector('#mDate').value;
       const nguoi_giao = dialog.querySelector('#mNguoiGiao').value || null;
       const quan_ly_xuat = dialog.querySelector('#mQuanLy').value || null;
-      const nha_xe_id = dialog.querySelector('#mNhaXe').value || null;
-      const bien_so = dialog.querySelector('#mBienSo').value || null;
-      const loai_xe_id = dialog.querySelector('#mLoaiXe').value || null;
       const transport_fee = parseFloat(dialog.querySelector('#mTransportFee').value) || null;
+
+      // Xe công ty (tự vận chuyển) hoặc nhà xe ngoài — 2 lựa chọn loại trừ nhau
+      const isCongTy = dialog.querySelector('#mVanChuyenType').value === 'congty';
+      let nha_xe_id = null, bien_so = null, loai_xe_id = null, company_vehicle_id = null;
+      if (isCongTy) {
+        company_vehicle_id = dialog.querySelector('#mCompanyVehicle').value || null;
+        const vehicle = companyVehicles.find(v => v.id === company_vehicle_id);
+        bien_so = vehicle?.bien_so ?? null;
+        loai_xe_id = vehicle?.loai_xe_id ?? null;
+      } else {
+        nha_xe_id = dialog.querySelector('#mNhaXe').value || null;
+        bien_so = dialog.querySelector('#mBienSo').value || null;
+        loai_xe_id = dialog.querySelector('#mLoaiXe').value || null;
+      }
 
       const submitBtn = dialog.querySelector('#mSubmit');
       submitBtn.disabled = true; submitBtn.textContent = 'Đang tạo...';
@@ -180,7 +208,7 @@ export async function render(container, profile, isStale = () => false) {
         from_location_type: fromType, from_location_id: fromId,
         to_location_type: toType, to_location_id: toId,
         project_id,
-        nguoi_giao, quan_ly_xuat, nha_xe_id, bien_so, loai_xe_id, transport_fee, status: 'tam', created_by: profile.id,
+        nguoi_giao, quan_ly_xuat, nha_xe_id, bien_so, loai_xe_id, company_vehicle_id, transport_fee, status: 'tam', created_by: profile.id,
       }).select().single();
       if (error) { alert('Lỗi tạo phiếu: ' + error.message); submitBtn.disabled = false; submitBtn.textContent = 'Kho ghi nhận tạm'; return; }
 
@@ -331,7 +359,7 @@ export async function render(container, profile, isStale = () => false) {
       categoryOptions: note.status === 'tam' ? categoryOptionsForExtra : null,
       signInfo: `<span>Người giao: <b>${esc(note.nguoi_giao ?? '—')}</b> · QL duyệt: <b>${esc(note.quan_ly_xuat ?? '—')}</b></span>
                  <span>Người nhận: <b>${esc(note.nguoi_nhan ?? '— chưa ký —')}</b></span>
-                 <span>Vận chuyển: <b>${esc(carriers.find(c => c.id === note.nha_xe_id)?.name ?? note.nha_xe ?? '—')}</b> · Số xe <b>${esc(note.bien_so ?? '—')}</b> · ${esc(vehicleTypes.find(v => v.id === note.loai_xe_id)?.name ?? '—')}${note.transport_fee ? ` · Phí: <b>${Number(note.transport_fee).toLocaleString('vi-VN')} đ</b>` : ''}</span>`,
+                 <span>Vận chuyển: <b>${note.company_vehicle_id ? '🚚 Xe công ty' : esc(carriers.find(c => c.id === note.nha_xe_id)?.name ?? note.nha_xe ?? '—')}</b> · Số xe <b>${esc(note.bien_so ?? '—')}</b> · ${esc(vehicleTypes.find(v => v.id === note.loai_xe_id)?.name ?? '—')}${note.transport_fee ? ` · Phí: <b>${Number(note.transport_fee).toLocaleString('vi-VN')} đ</b>` : ''}</span>`,
     });
 
     const footerHtml = `<button class="btn secondary" id="dCopyLink">🔗 Copy link chia sẻ</button>`;
