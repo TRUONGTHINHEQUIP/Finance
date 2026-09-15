@@ -267,6 +267,19 @@ export async function render(container, profile, isStale = () => false) {
     ];
     styledCells.forEach(({ ref, style }) => { if (ws[ref]) ws[ref].s = style; });
 
+    // Áp định dạng số có dấu phân cách hàng nghìn cho mọi ô số liệu — Excel sẽ tự
+    // hiện đúng dấu chấm/phẩy theo cấu hình hệ thống của máy đang mở file.
+    const range = XLSX.utils.decode_range(ws['!ref']);
+    for (let R = range.s.r; R <= range.e.r; R++) {
+      for (let C = range.s.c; C <= range.e.c; C++) {
+        const ref = XLSX.utils.encode_cell({ r: R, c: C });
+        const cell = ws[ref];
+        if (cell && typeof cell.v === 'number') {
+          cell.s = { ...(cell.s || {}), numFmt: '#,##0' };
+        }
+      }
+    }
+
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'BangKe');
     const fileName = `BangKe_${project.name.replace(/[^a-zA-Z0-9]/g, '')}_${from}_${to}.xlsx`;
