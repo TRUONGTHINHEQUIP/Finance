@@ -4,6 +4,11 @@
 // Mỗi dòng phát sinh/giảm đều giữ lại đúng mã phiếu (PGN) liên quan để đối chiếu.
 // Vận chuyển: gộp theo LOẠI XE (xe của công ty) - số chuyến + tổng phí mỗi loại.
 
+// Vận chuyển: chỉ tính phiếu dùng XE CÔNG TY (company_vehicle_id có giá trị) — gộp
+// theo từng xe cụ thể (biển số), không phải theo loại xe chung chung. Xe thuê ngoài
+// không đưa vào đây vì đó là chi phí bên thuê tự trả trực tiếp cho nhà xe, không
+// phải chi phí công ty bỏ ra.
+
 import { supabase } from './config.js';
 import { daysBetween } from './utils.js';
 
@@ -12,7 +17,7 @@ export async function computeStatement(projectId, periodStart, periodEnd) {
 
   const { data: arrivals, error: arrErr } = await supabase
     .from('transfer_notes')
-    .select('id, ngay_ky, code, transport_fee, loai_xe_id, transfer_note_items(category_id, sl_xuat, sl_thuc_nhan)')
+    .select('id, ngay_ky, code, transport_fee, company_vehicle_id, transfer_note_items(category_id, sl_xuat, sl_thuc_nhan)')
     .eq('to_location_type', 'du_an').eq('to_location_id', projectId)
     .eq('status', 'chinh_thuc').lte('ngay_ky', periodEnd);
   if (arrErr) throw arrErr;
@@ -75,14 +80,14 @@ export async function computeStatement(projectId, periodStart, periodEnd) {
     }
   }
 
-  // Vận chuyển — gộp theo LOẠI XE (xe của công ty): số chuyến + tổng phí mỗi loại,
-  // chỉ tính phiếu ký TRONG kỳ có Nơi nhận là đúng dự án này.
+  // Vận chuyển — CHỈ tính phiếu dùng xe công ty (có company_vehicle_id), gộp theo
+  // TỪNG XE (biển số cụ thể): số chuyến + tổng phí mỗi xe.
   const transportByVehicle = {};
   (arrivals ?? [])
-    .filter(n => n.transport_fee && n.ngay_ky >= periodStart && n.ngay_ky <= periodEnd)
+    .filter(n => n.transport_fee && n.company_vehicle_id && n.ngay_ky >= periodStart && n.ngay_ky <= periodEnd)
     .forEach(n => {
-      const key = n.loai_xe_id ?? '__khac__';
-      if (!transportByVehicle[key]) transportByVehicle[key] = { loai_xe_id: n.loai_xe_id, soChuyen: 0, thanhTien: 0 };
+      const key = n.company_vehicle_id;
+      if (!transportByVehicle[key]) transportByVehicle[key] = { company_vehicle_id: n.company_vehicle_id, soChuyen: 0, thanhTien: 0 };
       transportByVehicle[key].soChuyen += 1;
       transportByVehicle[key].thanhTien += Number(n.transport_fee);
     });
