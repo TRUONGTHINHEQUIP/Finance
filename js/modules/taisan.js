@@ -1,7 +1,8 @@
 // js/modules/taisan.js
-// Tổng tài sản sở hữu (asset_units) + vị trí HIỆN TẠI tính từ chính các phiếu giao
-// nhận đã xác nhận (transfer_notes) — cùng nguồn dữ liệu với Bảng kê, để "đang nằm
-// ở dự án nào bao nhiêu" luôn khớp với những gì đang được tính tiền thật.
+// Nguyen tac cot loi: TONG SO HUU = TAI KHO + DANG TAI DU AN + CAN BAO TRI, luon
+// dung theo cong thuc nay. "Tai kho" va "Can bao tri" lay tu asset_units. "Dang
+// tai du an" tinh tu chinh cac phieu giao nhan da CHINH THUC (den tru di, giong
+// het cach billing.js tinh) - khong dung trang thai tai_du_an trong asset_units.
 import { supabase } from '../core/config.js';
 import { fmtNum, fmtVND, todayStr, esc } from '../core/utils.js';
 import { openModal, closeModal } from '../core/modal.js';
@@ -9,108 +10,81 @@ import { openModal, closeModal } from '../core/modal.js';
 export async function render(container, profile, isStale = () => false) {
   container.innerHTML = `
     <div class="page-head">
-      <div><h1>Tài sản</h1><div class="sub">Tổng tài sản sở hữu và vị trí hiện tại (kho / dự án)</div></div>
+      <div><h1>Tài sản</h1><div class="sub">Tổng tài sản sở hữu = tại kho + đang tại dự án + cần bảo trì</div></div>
       <button class="btn" id="btnAddAsset">+ Thêm tài sản</button>
     </div>
     <div class="toolbar" style="border-bottom:1px solid var(--line); padding-bottom:14px;">
       <button class="btn small" id="tabByGroup">Theo nhóm hàng</button>
       <button class="btn secondary small" id="tabByProject">Tra cứu theo dự án / khách hàng</button>
     </div>
-    <div id="view-group"></div>
+    <div id="view-group" class="loading">Đang tải...</div>
     <div id="view-project" style="display:none;"></div>
   `;
 
-  const [{ data: groups }, { data: categories }, { data: partners }, { data: projects }, { data: summaryRows }] = await Promise.all([
+  const today = todayStr();
+
+  const [{ data: groups }, { data: categories }, { data: partners }, { data: projects }, { data: summaryRows }, { data: arrivals }, { data: departures }] = await Promise.all([
     supabase.from('groups').select('*').order('id'),
     supabase.from('categories').select('*').order('name'),
     supabase.from('partners').select('*').order('name'),
     supabase.from('projects').select('*').eq('status', 'active').order('name'),
-    supabase.from('asset_summary').select('*'), // tổng SỞ HỮU theo asset_units — dùng cho "tổng tài sản" và "cần bảo trì"
+    supabase.from('asset_summary').select('*'),
+    supabase.from('transfer_notes')
+      .select('to_location_id, transfer_note_items(category_id, sl_xuat, sl_thuc_nhan)')
+      .eq('to_location_type', 'du_an').eq('status', 'chinh_thuc').lte('ngay_ky', today),
+    supabase.from('transfer_notes')
+      .select('from_location_id, transfer_note_items(category_id, sl_xuat, sl_thuc_nhan)')
+      .eq('from_location_type', 'du_an').eq('status', 'chinh_thuc').lte('ngay_ky', today),
   ]);
   if (isStale()) return;
 
   const groupList = groups ?? [], catList = categories ?? [], partnerList = partners ?? [], projList = projects ?? [];
   const summary = summaryRows ?? [];
 
-  const ownedQtyByCategory = (categoryId) => summary.filter(r => r.category_id === categoryId).reduce((s, r) => s + r.qty, 0);
-  const baoTriQtyByCategory = (categoryId) => summary.filter(r => r.category_id === categoryId && r.status === 'can_bao_tri').reduce((s, r) => s + r.qty, 0);
-
-  const today = todayStr();
-
-  // Tính số lượng HIỆN TẠI đang ở từng dự án cho 1 chủng loại — dựa trên phiếu
-  // giao nhận đã CHÍNH THỨC (đến trừ đi), y hệt cách billing.js tính tồn — không
-  // phải dựa vào bảng khai báo tài sản riêng (asset_units) vốn không được cập
-  // nhật tự động khi xác nhận phiếu.
-  async function getCurrentProjectDistribution(categoryId) {
-    const [{ data: arrivals }, { data: departures }] = await Promise.all([
-      supabase.from('transfer_notes')
-        .select('to_location_id, transfer_note_items!inner(category_id, sl_xuat, sl_thuc_nhan)')
-        .eq('to_location_type', 'du_an').eq('status', 'chinh_thuc').lte('ngay_ky', today)
-        .eq('transfer_note_items.category_id', categoryId),
-      supabase.from('transfer_notes')
-        .select('from_location_id, transfer_note_items!inner(category_id, sl_xuat, sl_thuc_nhan)')
-        .eq('from_location_type', 'du_an').eq('status', 'chinh_thuc').lte('ngay_ky', today)
-        .eq('transfer_note_items.category_id', categoryId),
-    ]);
-
-    const net = {};
-    (arrivals ?? []).forEach(n => {
-      const qty = n.transfer_note_items.reduce((s, it) => s + Number(it.sl_thuc_nhan ?? it.sl_xuat), 0);
-      net[n.to_location_id] = (net[n.to_location_id] ?? 0) + qty;
-    });
-    (departures ?? []).forEach(n => {
-      const qty = n.transfer_note_items.reduce((s, it) => s + Number(it.sl_thuc_nhan ?? it.sl_xuat), 0);
-      net[n.from_location_id] = (net[n.from_location_id] ?? 0) - qty;
-    });
-    return Object.entries(net).filter(([, qty]) => qty > 0).map(([projectId, qty]) => ({ projectId, qty }));
+  const deployed = {};
+  function addQty(categoryId, projectId, delta) {
+    if (!deployed[categoryId]) deployed[categoryId] = {};
+    deployed[categoryId][projectId] = (deployed[categoryId][projectId] ?? 0) + delta;
   }
+  (arrivals ?? []).forEach(n => n.transfer_note_items.forEach(it => {
+    addQty(it.category_id, n.to_location_id, Number(it.sl_thuc_nhan ?? it.sl_xuat));
+  }));
+  (departures ?? []).forEach(n => n.transfer_note_items.forEach(it => {
+    addQty(it.category_id, n.from_location_id, -Number(it.sl_thuc_nhan ?? it.sl_xuat));
+  }));
 
-  // Tính toàn bộ chủng loại HIỆN TẠI đang có ở 1 dự án cụ thể — hướng ngược lại
-  // của hàm trên, dùng cho tab "Tra cứu theo dự án".
-  async function getCurrentCategoriesAtProject(projectId) {
-    const [{ data: arrivals }, { data: departures }] = await Promise.all([
-      supabase.from('transfer_notes')
-        .select('transfer_note_items(category_id, sl_xuat, sl_thuc_nhan)')
-        .eq('to_location_type', 'du_an').eq('to_location_id', projectId).eq('status', 'chinh_thuc').lte('ngay_ky', today),
-      supabase.from('transfer_notes')
-        .select('transfer_note_items(category_id, sl_xuat, sl_thuc_nhan)')
-        .eq('from_location_type', 'du_an').eq('from_location_id', projectId).eq('status', 'chinh_thuc').lte('ngay_ky', today),
-    ]);
-
-    const net = {};
-    (arrivals ?? []).forEach(n => n.transfer_note_items.forEach(it => {
-      const qty = Number(it.sl_thuc_nhan ?? it.sl_xuat);
-      net[it.category_id] = (net[it.category_id] ?? 0) + qty;
-    }));
-    (departures ?? []).forEach(n => n.transfer_note_items.forEach(it => {
-      const qty = Number(it.sl_thuc_nhan ?? it.sl_xuat);
-      net[it.category_id] = (net[it.category_id] ?? 0) - qty;
-    }));
-    return Object.entries(net).filter(([, qty]) => qty > 0).map(([categoryId, qty]) => ({ categoryId, qty }));
+  function projectRowsFor(categoryId) {
+    const map = deployed[categoryId] ?? {};
+    return Object.entries(map).filter(([, qty]) => qty > 0).map(([projectId, qty]) => ({ projectId, qty }));
   }
+  function totalDeployed(categoryId) {
+    return projectRowsFor(categoryId).reduce((s, r) => s + r.qty, 0);
+  }
+  const khoQty = (categoryId) => summary.filter(r => r.category_id === categoryId && r.status === 'kho').reduce((s, r) => s + r.qty, 0);
+  const baoTriQty = (categoryId) => summary.filter(r => r.category_id === categoryId && r.status === 'can_bao_tri').reduce((s, r) => s + r.qty, 0);
+  const totalOwned = (categoryId) => khoQty(categoryId) + totalDeployed(categoryId) + baoTriQty(categoryId);
 
-  // ================= TAB 1 — THEO NHÓM HÀNG =================
   const expandedGroups = new Set();
 
   function renderGroupTable() {
     let rowsHtml = '';
     groupList.forEach(g => {
       const catsInGroup = catList.filter(c => c.group_id === g.id).sort((a, b) => a.name.localeCompare(b.name));
-      const totalQty = catsInGroup.reduce((s, c) => s + ownedQtyByCategory(c.id), 0);
-      const totalValue = catsInGroup.reduce((s, c) => s + ownedQtyByCategory(c.id) * (c.ref_value ?? 0), 0);
+      const groupTotalQty = catsInGroup.reduce((s, c) => s + totalOwned(c.id), 0);
+      const groupTotalValue = catsInGroup.reduce((s, c) => s + totalOwned(c.id) * (c.ref_value ?? 0), 0);
       const isOpen = expandedGroups.has(g.id);
 
       rowsHtml += `<tr data-toggle-group="${g.id}" style="cursor:pointer; background:var(--gray-tint); font-weight:600;">
         <td style="color:var(--red-dark);">${isOpen ? '▾' : '▸'}&nbsp;${g.id}</td>
         <td>${esc(g.name)}</td>
-        <td class="num">${totalQty ? fmtNum(totalQty) : ''}</td>
+        <td class="num">${groupTotalQty ? fmtNum(groupTotalQty) : ''}</td>
         <td style="color:var(--ink-soft); font-weight:400;">${catsInGroup.length} chủng loại</td>
-        <td class="num">${fmtVND(totalValue)}</td>
+        <td class="num">${fmtVND(groupTotalValue)}</td>
       </tr>`;
 
       if (isOpen) {
         catsInGroup.forEach(c => {
-          const qty = ownedQtyByCategory(c.id);
+          const qty = totalOwned(c.id);
           const value = qty * (c.ref_value ?? 0);
           rowsHtml += `<tr data-open-cat="${c.id}" style="cursor:pointer;">
             <td></td>
@@ -146,36 +120,32 @@ export async function render(container, profile, isStale = () => false) {
     });
   }
 
-  async function openCategoryDetailModal(category) {
-    const totalOwned = ownedQtyByCategory(category.id);
-    const baoTri = baoTriQtyByCategory(category.id);
-    const atProjects = await getCurrentProjectDistribution(category.id);
-    if (isStale()) return;
+  function openCategoryDetailModal(category) {
+    const kho = khoQty(category.id);
+    const baoTri = baoTriQty(category.id);
+    const atProjects = projectRowsFor(category.id).sort((a, b) => b.qty - a.qty);
+    const atProjectsTotal = atProjects.reduce((s, r) => s + r.qty, 0);
+    const owned = kho + atProjectsTotal + baoTri;
+    const totalValue = owned * (category.ref_value ?? 0);
 
-    const totalAtProjects = atProjects.reduce((s, r) => s + r.qty, 0);
-    const atKho = Math.max(0, totalOwned - totalAtProjects - baoTri);
-    const totalValue = totalOwned * (category.ref_value ?? 0);
-
-    const projectRows = atProjects
-      .sort((a, b) => b.qty - a.qty)
-      .map((r, i) => {
-        const proj = projList.find(p => p.id === r.projectId);
-        const partnerName = partnerList.find(pt => pt.id === proj?.partner_id)?.name ?? '';
-        return `<tr>
-          <td>${i + 1}</td>
-          <td>${esc(proj?.name ?? '(dự án đã xóa)')}</td>
-          <td style="color:var(--ink-soft); font-size:.82rem;">${esc(partnerName)}</td>
-          <td class="num">${fmtNum(r.qty)}</td>
-          <td class="num">${fmtVND(r.qty * (category.ref_value ?? 0))}</td>
-        </tr>`;
-      }).join('');
+    const projectRows = atProjects.map((r, i) => {
+      const proj = projList.find(p => p.id === r.projectId);
+      const partnerName = partnerList.find(pt => pt.id === proj?.partner_id)?.name ?? '';
+      return `<tr>
+        <td>${i + 1}</td>
+        <td>${esc(proj?.name ?? '(dự án đã xóa)')}</td>
+        <td style="color:var(--ink-soft); font-size:.82rem;">${esc(partnerName)}</td>
+        <td class="num">${fmtNum(r.qty)}</td>
+        <td class="num">${fmtVND(r.qty * (category.ref_value ?? 0))}</td>
+      </tr>`;
+    }).join('');
 
     const bodyHtml = `
       <div style="font-size:.85rem; color:var(--ink-soft); margin-bottom:14px; line-height:1.8;">
         Đơn giá TS: <b>${fmtVND(category.ref_value)}</b>/${esc(category.unit)} &nbsp;·&nbsp;
-        Tổng tài sản sở hữu: <b>${fmtNum(totalOwned)}</b> ${esc(category.unit)} (giá trị <b>${fmtVND(totalValue)}</b>)<br>
-        Tại kho: <b>${fmtNum(atKho)}</b> &nbsp;·&nbsp;
-        Đang tại dự án: <b>${fmtNum(totalAtProjects)}</b> (${atProjects.length} dự án) &nbsp;·&nbsp;
+        <b style="color:var(--ink);">Tổng tài sản sở hữu: ${fmtNum(owned)} ${esc(category.unit)}</b> (giá trị <b>${fmtVND(totalValue)}</b>)<br>
+        = Tại kho: <b>${fmtNum(kho)}</b> &nbsp;+&nbsp;
+        Đang tại dự án: <b>${fmtNum(atProjectsTotal)}</b> (${atProjects.length} dự án) &nbsp;+&nbsp;
         Cần bảo trì: <b>${fmtNum(baoTri)}</b>
       </div>
       <b>Đang nằm tại các dự án:</b>
@@ -187,7 +157,6 @@ export async function render(container, profile, isStale = () => false) {
     openModal({ title: category.name, bodyHtml, footerHtml: '', wide: true });
   }
 
-  // ================= TAB 2 — TRA CỨU THEO DỰ ÁN / KHÁCH HÀNG =================
   function renderProjectSearchView() {
     container.querySelector('#view-project').innerHTML = `
       <div class="toolbar">
@@ -206,29 +175,27 @@ export async function render(container, profile, isStale = () => false) {
     refreshProjectOptions();
 
     container.querySelector('#searchPartner').addEventListener('change', refreshProjectOptions);
-    container.querySelector('#searchProject').addEventListener('change', async (e) => {
+    container.querySelector('#searchProject').addEventListener('change', (e) => {
       const projectId = e.target.value;
       const resultEl = container.querySelector('#projectResult');
       if (!projectId) { resultEl.innerHTML = ''; return; }
 
-      resultEl.innerHTML = '<div class="loading">Đang tính từ các phiếu giao nhận...</div>';
-      const items = await getCurrentCategoriesAtProject(projectId);
-      if (isStale()) return;
-
       const project = projList.find(p => p.id === projectId);
       let totalValue = 0;
-      const rows = items
-        .map(it => {
-          const cat = catList.find(c => c.id === it.categoryId);
-          const value = it.qty * (cat?.ref_value ?? 0);
+      const items = catList
+        .map(cat => ({ cat, qty: deployed[cat.id]?.[projectId] ?? 0 }))
+        .filter(r => r.qty > 0)
+        .map(r => {
+          const value = r.qty * (r.cat.ref_value ?? 0);
           totalValue += value;
-          return { name: cat?.name ?? '(?)', unit: cat?.unit ?? '', group: cat?.group_id ?? '', qty: it.qty, value };
+          return { group: r.cat.group_id, name: r.cat.name, unit: r.cat.unit, qty: r.qty, value };
         })
-        .sort((a, b) => b.value - a.value)
-        .map((r, i) => `<tr>
-          <td>${i + 1}</td><td>${r.group}</td><td>${esc(r.name)}</td><td>${esc(r.unit)}</td>
-          <td class="num">${fmtNum(r.qty)}</td><td class="num">${fmtVND(r.value)}</td>
-        </tr>`).join('');
+        .sort((a, b) => b.value - a.value);
+
+      const rows = items.map((r, i) => `<tr>
+        <td>${i + 1}</td><td>${r.group}</td><td>${esc(r.name)}</td><td>${esc(r.unit)}</td>
+        <td class="num">${fmtNum(r.qty)}</td><td class="num">${fmtVND(r.value)}</td>
+      </tr>`).join('');
 
       resultEl.innerHTML = `
         <div class="info-box" style="margin:14px 0;">Dự án <b>${esc(project?.name ?? '')}</b> hiện đang có <b>${items.length}</b> chủng loại, tổng giá trị tài sản đang thuê: <b>${fmtVND(totalValue)}</b></div>
@@ -242,15 +209,13 @@ export async function render(container, profile, isStale = () => false) {
     });
   }
 
-  // ================= THÊM TÀI SẢN =================
   function openAddAssetModal() {
     const bodyHtml = `
-      <div class="info-box">"Tồn kho ban đầu" dùng khi khai báo tài sản đã có sẵn lúc bắt đầu dùng phần mềm. "Đầu tư mới" dùng khi mua thêm thiết bị — có thể nhập kho hoặc chuyển thẳng ra dự án cho thuê.</div>
+      <div class="info-box">"Tồn kho ban đầu" dùng khi khai báo tài sản đã có sẵn lúc bắt đầu dùng phần mềm. "Đầu tư mới" dùng khi mua thêm thiết bị nhập vào kho. Nếu chuyển thẳng ra dự án, nhớ tạo thêm phiếu giao nhận tương ứng để vị trí hiển thị đúng.</div>
       <div class="field"><label>Nguồn gốc</label>
         <select id="aSource">
           <option value="kho_init">Tồn kho ban đầu (khởi tạo hệ thống)</option>
           <option value="new_to_kho">Đầu tư mới — nhập vào kho</option>
-          <option value="new_to_project">Đầu tư mới — chuyển thẳng đến dự án cho thuê</option>
         </select>
       </div>
       <div class="field-row">
@@ -259,11 +224,7 @@ export async function render(container, profile, isStale = () => false) {
       </div>
       <div class="field" id="aWarehouseField">
         <label>Nhập vào kho</label>
-        <select id="aWarehouse"><option value="">— Không cần chọn (chỉ ghi tổng sở hữu) —</option></select>
-      </div>
-      <div class="field" id="aProjectField" style="display:none;">
-        <label>Chuyển đến dự án</label>
-        <select id="aProject">${projList.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select>
+        <select id="aWarehouse"><option value="">— Đang tải danh sách kho —</option></select>
       </div>
       <div class="field-row">
         <div class="field"><label>Giá trị mua (mỗi đơn vị)</label><input type="number" id="aValue" value="${catList[0]?.ref_value ?? ''}"></div>
@@ -278,35 +239,26 @@ export async function render(container, profile, isStale = () => false) {
       dialog.querySelector('#aWarehouse').innerHTML = (wh ?? []).map(w => `<option value="${w.id}">${esc(w.name)}</option>`).join('');
     });
 
-    function syncFields() {
-      const source = dialog.querySelector('#aSource').value;
-      dialog.querySelector('#aWarehouseField').style.display = source === 'new_to_project' ? 'none' : 'block';
-      dialog.querySelector('#aProjectField').style.display = source === 'new_to_project' ? 'block' : 'none';
-    }
-    dialog.querySelector('#aSource').addEventListener('change', syncFields);
     dialog.querySelector('#aCategory').addEventListener('change', (e) => {
       dialog.querySelector('#aValue').value = e.target.selectedOptions[0].dataset.refvalue;
     });
 
     dialog.querySelector('#aCancel').addEventListener('click', closeModal);
     dialog.querySelector('#aSubmit').addEventListener('click', async () => {
-      const source = dialog.querySelector('#aSource').value;
       const category_id = dialog.querySelector('#aCategory').value;
       const qty = parseInt(dialog.querySelector('#aQty').value) || 0;
       const purchase_value = parseFloat(dialog.querySelector('#aValue').value) || 0;
       const purchase_date = dialog.querySelector('#aDate').value;
+      const warehouse_id = dialog.querySelector('#aWarehouse').value;
+      const source = dialog.querySelector('#aSource').value;
       const errBox = dialog.querySelector('#aError');
       errBox.style.display = 'none';
 
       if (qty < 1) { errBox.textContent = 'Số lượng phải lớn hơn 0.'; errBox.style.display = 'block'; return; }
+      if (!warehouse_id) { errBox.textContent = 'Chọn kho nhập vào.'; errBox.style.display = 'block'; return; }
 
       const category = catList.find(c => c.id === category_id);
-      const status = source === 'new_to_project' ? 'tai_du_an' : 'kho';
-      const warehouse_id = source === 'new_to_project' ? null : (dialog.querySelector('#aWarehouse').value || null);
-      const project_id = source === 'new_to_project' ? dialog.querySelector('#aProject').value : null;
-      const source_note = source === 'kho_init' ? `Tồn kho ban đầu — khởi tạo ngày ${purchase_date}`
-        : source === 'new_to_kho' ? `Đầu tư mới, nhập kho ngày ${purchase_date}`
-        : `Đầu tư mới, chuyển thẳng đến dự án ngày ${purchase_date}`;
+      const source_note = source === 'kho_init' ? `Tồn kho ban đầu — khởi tạo ngày ${purchase_date}` : `Đầu tư mới, nhập kho ngày ${purchase_date}`;
 
       const submitBtn = dialog.querySelector('#aSubmit');
       submitBtn.disabled = true; submitBtn.textContent = 'Đang tạo...';
@@ -320,7 +272,7 @@ export async function render(container, profile, isStale = () => false) {
         for (let i = 0; i < qty; i++) {
           rows.push({
             asset_code: `${category.code}-${String(startSeq + i).padStart(5, '0')}`,
-            category_id, status, warehouse_id, project_id,
+            category_id, status: 'kho', warehouse_id,
             source: 'mua_moi', source_note, purchase_value, purchase_date,
             created_by: profile.id,
           });
@@ -329,7 +281,7 @@ export async function render(container, profile, isStale = () => false) {
         if (error) throw error;
 
         closeModal();
-        alert('Đã thêm tài sản — tải lại trang Tài sản để thấy tổng sở hữu cập nhật.');
+        alert('Đã thêm tài sản vào kho — tải lại trang Tài sản để thấy số liệu cập nhật.');
       } catch (err) {
         errBox.textContent = 'Lỗi: ' + err.message;
         errBox.style.display = 'block';
