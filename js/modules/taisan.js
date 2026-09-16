@@ -158,23 +158,29 @@ export async function render(container, profile, isStale = () => false) {
   function renderProjectSearchView() {
     container.querySelector('#view-project').innerHTML = `
       <div class="toolbar">
-        <select id="searchPartner"><option value="">Tất cả khách hàng</option>${partnerList.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select>
-        <select id="searchProject"><option value="">— Chọn dự án —</option></select>
+        <input type="text" id="searchPartnerInput" list="searchPartnerList" placeholder="Gõ để tìm khách hàng...">
+        <datalist id="searchPartnerList">${partnerList.map(p => `<option value="${esc(p.name)}"></option>`).join('')}</datalist>
+        <input type="text" id="searchProjectInput" list="searchProjectList" placeholder="Gõ để tìm dự án...">
+        <datalist id="searchProjectList"></datalist>
       </div>
       <div id="projectResult"></div>
     `;
 
+    let selectedPartnerId = '';
+
     function refreshProjectOptions() {
-      const partnerId = container.querySelector('#searchPartner').value;
-      const list = partnerId ? projList.filter(p => p.partner_id === partnerId) : projList;
-      container.querySelector('#searchProject').innerHTML = '<option value="">— Chọn dự án —</option>' +
-        list.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('');
+      const list = selectedPartnerId ? projList.filter(p => p.partner_id === selectedPartnerId) : projList;
+      container.querySelector('#searchProjectList').innerHTML = list.map(p => `<option value="${esc(p.name)}"></option>`).join('');
     }
     refreshProjectOptions();
 
-    container.querySelector('#searchPartner').addEventListener('change', refreshProjectOptions);
-    container.querySelector('#searchProject').addEventListener('change', (e) => {
-      const projectId = e.target.value;
+    container.querySelector('#searchPartnerInput').addEventListener('input', (e) => {
+      const match = partnerList.find(p => p.name === e.target.value);
+      selectedPartnerId = match ? match.id : '';
+      refreshProjectOptions();
+    });
+
+    function showResultFor(projectId) {
       const resultEl = container.querySelector('#projectResult');
       if (!projectId) { resultEl.innerHTML = ''; return; }
 
@@ -186,24 +192,49 @@ export async function render(container, profile, isStale = () => false) {
         .map(r => {
           const value = r.qty * (r.cat.ref_value ?? 0);
           totalValue += value;
-          return { group: r.cat.group_id, name: r.cat.name, unit: r.cat.unit, qty: r.qty, value };
-        })
-        .sort((a, b) => b.value - a.value);
+          return { cat: r.cat, qty: r.qty, value };
+        });
 
-      const rows = items.map((r, i) => `<tr>
-        <td>${i + 1}</td><td>${r.group}</td><td>${esc(r.name)}</td><td>${esc(r.unit)}</td>
-        <td class="num">${fmtNum(r.qty)}</td><td class="num">${fmtVND(r.value)}</td>
-      </tr>`).join('');
+      // Gom theo NHÓM A-E — đúng cách trình bày 2 lớp đã thống nhất ở tab "Theo nhóm hàng"
+      const byGroup = {};
+      items.forEach(it => { (byGroup[it.cat.group_id] ??= []).push(it); });
+      Object.values(byGroup).forEach(list => list.sort((a, b) => b.value - a.value));
+
+      let rowsHtml = '';
+      groupList.filter(g => byGroup[g.id]).forEach(g => {
+        const groupItems = byGroup[g.id];
+        const groupTotal = groupItems.reduce((s, it) => s + it.value, 0);
+        rowsHtml += `<tr style="background:var(--gray-tint); font-weight:700;">
+          <td colspan="4">NHÓM ${g.id} — ${esc(g.name).toUpperCase()}</td>
+          <td class="num">${fmtVND(groupTotal)}</td>
+        </tr>`;
+        groupItems.forEach(it => {
+          rowsHtml += `<tr>
+            <td style="padding-left:26px;">${esc(it.cat.name)}</td><td>${esc(it.cat.unit)}</td>
+            <td class="num">${fmtNum(it.qty)}</td><td></td><td class="num">${fmtVND(it.value)}</td>
+          </tr>`;
+        });
+      });
 
       resultEl.innerHTML = `
         <div class="info-box" style="margin:14px 0;">Dự án <b>${esc(project?.name ?? '')}</b> hiện đang có <b>${items.length}</b> chủng loại, tổng giá trị tài sản đang thuê: <b>${fmtVND(totalValue)}</b></div>
         <div class="panel"><div class="panel-body" style="padding:0">
           <table>
-            <thead><tr><th style="width:40px;">STT</th><th>Nhóm</th><th>Chủng loại</th><th>ĐVT</th><th class="num">Số lượng</th><th class="num">Giá trị</th></tr></thead>
-            <tbody>${rows || '<tr><td colspan="6" class="empty-state">Dự án này hiện không có tài sản nào</td></tr>'}</tbody>
+            <thead><tr><th>Chủng loại</th><th>ĐVT</th><th class="num">Số lượng</th><th></th><th class="num">Giá trị</th></tr></thead>
+            <tbody>${rowsHtml || '<tr><td colspan="5" class="empty-state">Dự án này hiện không có tài sản nào</td></tr>'}</tbody>
           </table>
         </div></div>
       `;
+    }
+
+    container.querySelector('#searchProjectInput').addEventListener('input', (e) => {
+      const candidates = selectedPartnerId ? projList.filter(p => p.partner_id === selectedPartnerId) : projList;
+      const match = candidates.find(p => p.name === e.target.value);
+      if (match && !selectedPartnerId) {
+        selectedPartnerId = match.partner_id;
+        container.querySelector('#searchPartnerInput').value = partnerList.find(pt => pt.id === match.partner_id)?.name ?? '';
+      }
+      showResultFor(match ? match.id : '');
     });
   }
 
