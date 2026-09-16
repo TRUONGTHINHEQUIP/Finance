@@ -37,7 +37,7 @@ export async function render(container, profile, isStale = () => false) {
       <div class="toolbar">
         <input type="text" id="bkPartnerInput" list="bkPartnerList" placeholder="Gõ để tìm khách hàng...">
         <datalist id="bkPartnerList"></datalist>
-        <input type="text" id="bkProjectInput" list="bkProjectList" placeholder="Gõ để tìm dự án..." disabled>
+        <input type="text" id="bkProjectInput" list="bkProjectList" placeholder="Gõ để tìm dự án...">
         <datalist id="bkProjectList"></datalist>
         <span style="font-size:.8rem;color:var(--ink-soft);">Từ ngày</span><input type="date" id="bkFrom">
         <span style="font-size:.8rem;color:var(--ink-soft);">Đến ngày</span><input type="date" id="bkTo">
@@ -66,14 +66,12 @@ export async function render(container, profile, isStale = () => false) {
   container.querySelector('#bkPartnerList').innerHTML =
     partnerList.map(pt => `<option value="${esc(pt.name)}"></option>`).join('');
 
+  // Mặc định gợi ý TOÀN BỘ dự án — chọn khách hàng chỉ để lọc bớt cho gọn, không bắt buộc.
   function refreshBkProjectOptions() {
-    const projInput = container.querySelector('#bkProjectInput');
-    const list = selectedPartnerId ? projects.filter(pr => pr.partner_id === selectedPartnerId) : [];
+    const list = selectedPartnerId ? projects.filter(pr => pr.partner_id === selectedPartnerId) : projects;
     container.querySelector('#bkProjectList').innerHTML = list.map(pr => `<option value="${esc(pr.name)}"></option>`).join('');
-    projInput.disabled = !selectedPartnerId;
-    projInput.value = '';
-    selectedProjectId = '';
   }
+  refreshBkProjectOptions();
 
   container.querySelector('#bkPartnerInput').addEventListener('input', (e) => {
     const match = partnerList.find(pt => pt.name === e.target.value);
@@ -82,9 +80,13 @@ export async function render(container, profile, isStale = () => false) {
   });
 
   container.querySelector('#bkProjectInput').addEventListener('input', (e) => {
-    const candidates = projects.filter(pr => pr.partner_id === selectedPartnerId);
-    const match = candidates.find(pr => pr.name === e.target.value);
+    const match = projects.find(pr => pr.name === e.target.value);
     selectedProjectId = match ? match.id : '';
+    // Gõ thẳng dự án mà chưa chọn khách hàng -> tự điền lại đúng khách hàng cho khớp.
+    if (match && !selectedPartnerId) {
+      selectedPartnerId = match.partner_id;
+      container.querySelector('#bkPartnerInput').value = match.partners?.name ?? '';
+    }
   });
 
   container.querySelector('#bkFrom').value = addDaysStr(todayStr(), -30);
