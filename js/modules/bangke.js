@@ -1,7 +1,7 @@
 // js/modules/bangke.js
 import { supabase } from '../core/config.js';
 import { openModal, closeModal } from '../core/modal.js';
-import { fmtVND, fmtDate, todayStr, addDaysStr, esc } from '../core/utils.js';
+import { fmtVND, fmtNum, fmtDate, todayStr, addDaysStr, esc } from '../core/utils.js';
 import { computeStatement, saveStatement, findClosedStatement, getPendingAdjustments, markAdjustmentsApplied, createAdjustment } from '../core/billing.js';
 
 function sourceTypeLabel(type) {
@@ -102,7 +102,7 @@ export async function render(container, profile, isStale = () => false) {
 
         html += `<tr style="font-weight:600; color:var(--red-dark);">
           <td>${stt}</td><td></td><td>${esc(cat?.name ?? '(?)')}</td><td>${esc(cat?.unit ?? '')}</td>
-          <td></td><td class="num">${catTotalQty}</td><td></td>
+          <td></td><td class="num">${fmtNum(catTotalQty)}</td><td></td>
           <td class="num">${fmtVND(catTotalTien)}</td><td></td>
         </tr>`;
 
@@ -110,7 +110,7 @@ export async function render(container, profile, isStale = () => false) {
           const isGiam = l.source_type === 'giam_trong_ky';
           html += `<tr${isGiam ? ' style="color:var(--red-dark);"' : ''}>
             <td></td><td>${fmtDate(l.ngay)}</td><td style="padding-left:20px;">${sourceTypeLabel(l.source_type)}</td>
-            <td></td><td class="num">${l.so_ngay}</td><td class="num">${l.so_luong}</td>
+            <td></td><td class="num">${fmtNum(l.so_ngay)}</td><td class="num">${fmtNum(l.so_luong)}</td>
             <td class="num">${fmtVND(l.don_gia)}</td><td class="num">${fmtVND(l.thanh_tien)}</td>
             <td>${l.note_code ? esc(l.note_code) : '—'}</td>
           </tr>`;
@@ -128,7 +128,7 @@ export async function render(container, profile, isStale = () => false) {
       grandTotal += t.thanhTien;
       rows += `<tr style="font-weight:600; color:var(--red-dark);">
         <td>${esc(vehicleLabel(t.company_vehicle_id))}</td>
-        <td class="num">${t.soChuyen}</td><td></td>
+        <td class="num">${fmtNum(t.soChuyen)}</td><td></td>
         <td class="num">${fmtVND(t.thanhTien)}</td><td></td>
       </tr>`;
       (t.trips ?? []).slice().sort((a, b) => a.ngay.localeCompare(b.ngay)).forEach(trip => {
