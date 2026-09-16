@@ -35,7 +35,8 @@ export async function render(container, profile, isStale = () => false) {
     </div>
     <div id="sub-tao">
       <div class="toolbar">
-        <select id="bkProject"></select>
+        <select id="bkPartner"><option value="">— Chọn khách hàng —</option></select>
+        <select id="bkProject"><option value="">— Chọn dự án —</option></select>
         <span style="font-size:.8rem;color:var(--ink-soft);">Từ ngày</span><input type="date" id="bkFrom">
         <span style="font-size:.8rem;color:var(--ink-soft);">Đến ngày</span><input type="date" id="bkTo">
         <button class="btn small" id="bkCalc">Tính bảng kê</button>
@@ -47,17 +48,28 @@ export async function render(container, profile, isStale = () => false) {
     </div>
   `;
 
-  const [{ data: c }, { data: p }, { data: g }, { data: cv }, { data: ci }] = await Promise.all([
+  const [{ data: c }, { data: p }, { data: g }, { data: cv }, { data: ci }, { data: pt }] = await Promise.all([
     supabase.from('categories').select('*'),
     supabase.from('projects').select('*, partners(*)').eq('status', 'active').order('name'),
     supabase.from('groups').select('*').order('id'),
     supabase.from('company_vehicles').select('*, vehicle_types(name)'),
     supabase.from('company_info').select('*').limit(1).maybeSingle(),
+    supabase.from('partners').select('*').order('name'),
   ]);
   if (isStale()) return;
-  const categories = c ?? [], projects = p ?? [], groups = g ?? [], companyVehicles = cv ?? [], companyInfo = ci ?? {};
+  const categories = c ?? [], projects = p ?? [], groups = g ?? [], companyVehicles = cv ?? [], companyInfo = ci ?? {}, partnerList = pt ?? [];
 
-  container.querySelector('#bkProject').innerHTML = projects.map(p => `<option value="${p.id}">${p.name} (${p.partners?.name ?? ''})</option>`).join('');
+  container.querySelector('#bkPartner').innerHTML = '<option value="">— Chọn khách hàng —</option>' +
+    partnerList.map(pt => `<option value="${pt.id}">${esc(pt.name)}</option>`).join('');
+
+  function refreshBkProjectOptions() {
+    const partnerId = container.querySelector('#bkPartner').value;
+    const list = partnerId ? projects.filter(pr => pr.partner_id === partnerId) : [];
+    container.querySelector('#bkProject').innerHTML = '<option value="">— Chọn dự án —</option>' +
+      list.map(pr => `<option value="${pr.id}">${esc(pr.name)}</option>`).join('');
+  }
+  container.querySelector('#bkPartner').addEventListener('change', refreshBkProjectOptions);
+
   container.querySelector('#bkFrom').value = addDaysStr(todayStr(), -30);
   container.querySelector('#bkTo').value = todayStr();
 
