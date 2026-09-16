@@ -1,18 +1,17 @@
 // js/modules/users.js
-// Chỉ admin thấy được mục này (đã lọc ở core/shell.js), kiểm tra lại ở đây cho chắc.
-//
-// Cách tạo user mới: dùng auth.signUp() — thao tác công khai, chỉ cần anon key,
-// không cần service_role key / Edge Function. Điểm mấu chốt: gọi qua 1 client
-// Supabase TẠM RIÊNG (persistSession:false) để không ghi đè phiên đăng nhập
-// hiện tại của admin trong trình duyệt — nếu gọi trên "supabase" client chính,
-// trình duyệt sẽ tự chuyển sang đăng nhập làm user mới đó thay vì vẫn là admin.
-
-import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
-import { supabase, SUPABASE_URL, SUPABASE_ANON_KEY } from '../core/config.js';
+// Chi admin - quan ly tai khoan nguoi dung. Sale duoc gan 1 khach hang phu trach
+// (assigned_partner_id) - RLS se tu gioi han Sale do chi thay dung du lieu khach do.
+import { supabase } from '../core/config.js';
 import { requireRole, roleLabel } from '../core/auth.js';
 import { openModal, closeModal } from '../core/modal.js';
+import { esc } from '../core/utils.js';
 
-export async function render(container, profile) {
+const SUPABASE_URL = 'https://shgorgwdphqyxdfwufvu.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNoZ29yZ3dkcGhxeXhkZnd1ZnZ1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg2NjMwMDgsImV4cCI6MjEwNDIzOTAwOH0.OdUuwrmC_Uc3pEL8pKHR9r_uvQIX_0-3Q5IT81I-XNw';
+
+const ROLES = ['kho', 'sale', 'ke_toan', 'bgd', 'admin'];
+
+export async function render(container, profile, isStale = () => false) {
   if (!requireRole(profile, ['admin'])) {
     container.innerHTML = `<div class="error-box">Chỉ Admin mới truy cập được mục này.</div>`;
     return;
@@ -20,127 +19,111 @@ export async function render(container, profile) {
 
   container.innerHTML = `
     <div class="page-head">
-      <div><h1>Người dùng</h1><div class="sub">Thêm tài khoản mới và phân quyền theo vai trò</div></div>
+      <div><h1>Người dùng</h1><div class="sub">Tài khoản đăng nhập — Sale được gán theo đúng 1 khách hàng phụ trách</div></div>
       <button class="btn" id="btnNewUser">+ Thêm người dùng</button>
     </div>
     <div class="panel"><div class="panel-body" style="padding:0"><table id="userTable"><tbody><tr><td class="loading">Đang tải...</td></tr></tbody></table></div></div>
   `;
 
+  const { data: pt } = await supabase.from('partners').select('*').order('name');
+  if (isStale()) return;
+  const partnerList = pt ?? [];
+
   async function loadUsers() {
-    const { data, error } = await supabase.from('profiles').select('*').order('full_name');
+    const { data, error } = await supabase.from('profiles').select('*, partners:assigned_partner_id(name)').order('full_name');
+    if (isStale()) return;
     const table = container.querySelector('#userTable');
     if (error) { table.innerHTML = `<tr><td class="error-box">${error.message}</td></tr>`; return; }
 
     const rows = (data ?? []).map(u => `<tr>
-      <td>${u.full_name}</td>
-      <td>${u.email ?? '—'}</td>
-      <td><span class="badge tam">${roleLabel(u.role)}</span></td>
-      <td>${u.is_active ? '<span class="badge chinh">Hoạt động</span>' : '<span class="badge tre">Đã khóa</span>'}</td>
-      <td><button class="btn secondary small" data-edit="${u.id}">Sửa</button></td>
+      <td><b>${esc(u.full_name ?? '(chưa đặt tên)')}</b></td>
+      <td>${esc(u.email ?? '')}</td>
+      <td>${esc(roleLabel(u.role))}</td>
+      <td>${u.role === 'sale' ? esc(u.partners?.name ?? '— chưa gán —') : '—'}</td>
+      <td><button class="btn secondary small" data-edit-user="${u.id}">Sửa</button></td>
     </tr>`).join('');
 
-    table.innerHTML = `<thead><tr><th>Họ tên</th><th>Email</th><th>Vai trò</th><th>Trạng thái</th><th></th></tr></thead>
+    table.innerHTML = `<thead><tr><th>Họ tên</th><th>Email</th><th>Vai trò</th><th>Khách hàng phụ trách</th><th></th></tr></thead>
       <tbody>${rows || '<tr><td colspan="5" class="empty-state">Chưa có người dùng nào</td></tr>'}</tbody>`;
 
-    table.querySelectorAll('[data-edit]').forEach(btn => {
-      btn.addEventListener('click', () => openEditModal(data.find(u => u.id === btn.dataset.edit)));
-    });
+    table.querySelectorAll('[data-edit-user]').forEach(btn =>
+      btn.addEventListener('click', () => openUserModal((data ?? []).find(u => u.id === btn.dataset.editUser))));
   }
 
-  function openNewUserModal() {
+  function partnerOptionsHtml(selectedId) {
+    return '<option value="">— Chưa gán —</option>' +
+      partnerList.map(p => `<option value="${p.id}" ${p.id === selectedId ? 'selected' : ''}>${esc(p.name)}</option>`).join('');
+  }
+
+  function openUserModal(existing) {
+    const isNew = !existing;
     const bodyHtml = `
-      <div class="info-box">Người dùng mới đăng nhập ngay bằng email + mật khẩu này — không cần xác nhận email nếu mục "Confirm email" đang tắt trong Supabase Authentication settings.</div>
-      <div class="field"><label>Họ tên</label><input type="text" id="uName"></div>
-      <div class="field"><label>Email</label><input type="email" id="uEmail"></div>
-      <div class="field"><label>Mật khẩu tạm thời</label><input type="text" id="uPassword" placeholder="Ít nhất 6 ký tự"></div>
+      <div class="field"><label>Họ tên</label><input type="text" id="uFullName" value="${esc(existing?.full_name ?? '')}"></div>
+      <div class="field"><label>Email</label><input type="email" id="uEmail" value="${esc(existing?.email ?? '')}" ${isNew ? '' : 'disabled'}></div>
+      ${isNew ? `<div class="field"><label>Mật khẩu tạm</label><input type="text" id="uPassword" placeholder="Ít nhất 6 ký tự"></div>` : ''}
       <div class="field"><label>Vai trò</label>
-        <select id="uRole">
-          <option value="kho">Kho</option>
-          <option value="sale">Sale</option>
-          <option value="ke_toan">Kế toán</option>
-          <option value="bgd">BGD</option>
-          <option value="admin">Admin</option>
-        </select>
+        <select id="uRole">${ROLES.map(r => `<option value="${r}" ${existing?.role === r ? 'selected' : ''}>${esc(roleLabel(r))}</option>`).join('')}</select>
+      </div>
+      <div class="field" id="uPartnerField" style="display:${existing?.role === 'sale' ? 'block' : 'none'};">
+        <label>Khách hàng phụ trách</label>
+        <select id="uPartner">${partnerOptionsHtml(existing?.assigned_partner_id)}</select>
+        <div class="note-box" style="margin-top:6px;">Sale chỉ thấy và thao tác được dữ liệu (dự án, phiếu, bảng kê, hao hụt, giá) của đúng khách hàng được gán ở đây.</div>
       </div>
       <div id="uError" class="error-box" style="display:none;"></div>
     `;
-    const footerHtml = `<button class="btn secondary" id="uCancel">Hủy</button><button class="btn" id="uSubmit">Tạo tài khoản</button>`;
-    const dialog = openModal({ title: 'Thêm người dùng mới', bodyHtml, footerHtml });
+    const footerHtml = `<button class="btn secondary" id="uCancel">Hủy</button><button class="btn" id="uSubmit">${isNew ? 'Tạo tài khoản' : 'Lưu thay đổi'}</button>`;
+    const dialog = openModal({ title: isNew ? 'Thêm người dùng' : `Sửa — ${existing.full_name ?? existing.email}`, bodyHtml, footerHtml });
+
+    dialog.querySelector('#uRole').addEventListener('change', (e) => {
+      dialog.querySelector('#uPartnerField').style.display = e.target.value === 'sale' ? 'block' : 'none';
+    });
 
     dialog.querySelector('#uCancel').addEventListener('click', closeModal);
     dialog.querySelector('#uSubmit').addEventListener('click', async () => {
-      const full_name = dialog.querySelector('#uName').value.trim();
-      const email = dialog.querySelector('#uEmail').value.trim();
-      const password = dialog.querySelector('#uPassword').value;
+      const full_name = dialog.querySelector('#uFullName').value.trim();
       const role = dialog.querySelector('#uRole').value;
+      const assigned_partner_id = role === 'sale' ? (dialog.querySelector('#uPartner').value || null) : null;
       const errBox = dialog.querySelector('#uError');
       errBox.style.display = 'none';
 
-      if (!full_name || !email || !password || password.length < 6) {
-        errBox.textContent = 'Điền đủ thông tin, mật khẩu tối thiểu 6 ký tự.';
-        errBox.style.display = 'block';
-        return;
-      }
+      if (!full_name) { errBox.textContent = 'Nhập họ tên.'; errBox.style.display = 'block'; return; }
 
       const submitBtn = dialog.querySelector('#uSubmit');
-      submitBtn.disabled = true; submitBtn.textContent = 'Đang tạo...';
+      submitBtn.disabled = true; submitBtn.textContent = 'Đang lưu...';
 
       try {
-        // Kết nối TẠM RIÊNG — không dùng chung với phiên đăng nhập admin hiện tại
-        const tempClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-          auth: { persistSession: false, autoRefreshToken: false },
-        });
-        const { data: signUpData, error: signUpError } = await tempClient.auth.signUp({ email, password });
-        if (signUpError) throw signUpError;
+        if (isNew) {
+          const email = dialog.querySelector('#uEmail').value.trim();
+          const password = dialog.querySelector('#uPassword').value;
+          if (!email || !password || password.length < 6) throw new Error('Nhập đủ email và mật khẩu (ít nhất 6 ký tự).');
 
-        // Insert profile bằng client CHÍNH (vẫn đang đăng nhập là admin) — RLS yêu cầu
-        // đúng người gọi phải có role admin mới insert được vào bảng profiles.
-        const { error: profileError } = await supabase.from('profiles').insert({
-          id: signUpData.user.id, full_name, role, email, is_active: true,
-        });
-        if (profileError) throw profileError;
+          const { createClient } = await import('https://esm.sh/@supabase/supabase-js@2');
+          const tempClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+          const { data: signUpData, error: signUpError } = await tempClient.auth.signUp({ email, password });
+          if (signUpError) throw signUpError;
+          const newUserId = signUpData.user?.id;
+          if (!newUserId) throw new Error('Không lấy được ID tài khoản vừa tạo.');
+
+          const { error: profileError } = await supabase.from('profiles').insert({
+            id: newUserId, full_name, email, role, assigned_partner_id,
+          });
+          if (profileError) throw profileError;
+        } else {
+          const { error: updateError } = await supabase.from('profiles')
+            .update({ full_name, role, assigned_partner_id }).eq('id', existing.id);
+          if (updateError) throw updateError;
+        }
 
         closeModal();
         loadUsers();
       } catch (err) {
         errBox.textContent = 'Lỗi: ' + err.message;
         errBox.style.display = 'block';
-        submitBtn.disabled = false; submitBtn.textContent = 'Tạo tài khoản';
+        submitBtn.disabled = false; submitBtn.textContent = isNew ? 'Tạo tài khoản' : 'Lưu thay đổi';
       }
     });
   }
 
-  function openEditModal(user) {
-    const bodyHtml = `
-      <div class="field"><label>Họ tên</label><input type="text" id="eName" value="${user.full_name}"></div>
-      <div class="field"><label>Vai trò</label>
-        <select id="eRole">
-          ${['kho', 'sale', 'ke_toan', 'bgd', 'admin'].map(r => `<option value="${r}" ${r === user.role ? 'selected' : ''}>${roleLabel(r)}</option>`).join('')}
-        </select>
-      </div>
-      <div class="field"><label>Trạng thái</label>
-        <select id="eActive">
-          <option value="true" ${user.is_active ? 'selected' : ''}>Hoạt động</option>
-          <option value="false" ${!user.is_active ? 'selected' : ''}>Khóa tài khoản</option>
-        </select>
-      </div>
-    `;
-    const footerHtml = `<button class="btn secondary" id="eCancel">Hủy</button><button class="btn" id="eSubmit">Lưu thay đổi</button>`;
-    const dialog = openModal({ title: `Sửa người dùng — ${user.full_name}`, bodyHtml, footerHtml });
-
-    dialog.querySelector('#eCancel').addEventListener('click', closeModal);
-    dialog.querySelector('#eSubmit').addEventListener('click', async () => {
-      const { error } = await supabase.from('profiles').update({
-        full_name: dialog.querySelector('#eName').value,
-        role: dialog.querySelector('#eRole').value,
-        is_active: dialog.querySelector('#eActive').value === 'true',
-      }).eq('id', user.id);
-      if (error) { alert('Lỗi cập nhật: ' + error.message); return; }
-      closeModal();
-      loadUsers();
-    });
-  }
-
-  container.querySelector('#btnNewUser').addEventListener('click', openNewUserModal);
+  container.querySelector('#btnNewUser').addEventListener('click', () => openUserModal(null));
   await loadUsers();
 }
