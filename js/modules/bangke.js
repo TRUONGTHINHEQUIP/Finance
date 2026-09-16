@@ -35,8 +35,10 @@ export async function render(container, profile, isStale = () => false) {
     </div>
     <div id="sub-tao">
       <div class="toolbar">
-        <select id="bkPartner"><option value="">— Chọn khách hàng —</option></select>
-        <select id="bkProject"><option value="">— Chọn dự án —</option></select>
+        <input type="text" id="bkPartnerInput" list="bkPartnerList" placeholder="Gõ để tìm khách hàng...">
+        <datalist id="bkPartnerList"></datalist>
+        <input type="text" id="bkProjectInput" list="bkProjectList" placeholder="Gõ để tìm dự án..." disabled>
+        <datalist id="bkProjectList"></datalist>
         <span style="font-size:.8rem;color:var(--ink-soft);">Từ ngày</span><input type="date" id="bkFrom">
         <span style="font-size:.8rem;color:var(--ink-soft);">Đến ngày</span><input type="date" id="bkTo">
         <button class="btn small" id="bkCalc">Tính bảng kê</button>
@@ -59,16 +61,31 @@ export async function render(container, profile, isStale = () => false) {
   if (isStale()) return;
   const categories = c ?? [], projects = p ?? [], groups = g ?? [], companyVehicles = cv ?? [], companyInfo = ci ?? {}, partnerList = pt ?? [];
 
-  container.querySelector('#bkPartner').innerHTML = '<option value="">— Chọn khách hàng —</option>' +
-    partnerList.map(pt => `<option value="${pt.id}">${esc(pt.name)}</option>`).join('');
+  let selectedPartnerId = '', selectedProjectId = '';
+
+  container.querySelector('#bkPartnerList').innerHTML =
+    partnerList.map(pt => `<option value="${esc(pt.name)}"></option>`).join('');
 
   function refreshBkProjectOptions() {
-    const partnerId = container.querySelector('#bkPartner').value;
-    const list = partnerId ? projects.filter(pr => pr.partner_id === partnerId) : [];
-    container.querySelector('#bkProject').innerHTML = '<option value="">— Chọn dự án —</option>' +
-      list.map(pr => `<option value="${pr.id}">${esc(pr.name)}</option>`).join('');
+    const projInput = container.querySelector('#bkProjectInput');
+    const list = selectedPartnerId ? projects.filter(pr => pr.partner_id === selectedPartnerId) : [];
+    container.querySelector('#bkProjectList').innerHTML = list.map(pr => `<option value="${esc(pr.name)}"></option>`).join('');
+    projInput.disabled = !selectedPartnerId;
+    projInput.value = '';
+    selectedProjectId = '';
   }
-  container.querySelector('#bkPartner').addEventListener('change', refreshBkProjectOptions);
+
+  container.querySelector('#bkPartnerInput').addEventListener('input', (e) => {
+    const match = partnerList.find(pt => pt.name === e.target.value);
+    selectedPartnerId = match ? match.id : '';
+    refreshBkProjectOptions();
+  });
+
+  container.querySelector('#bkProjectInput').addEventListener('input', (e) => {
+    const candidates = projects.filter(pr => pr.partner_id === selectedPartnerId);
+    const match = candidates.find(pr => pr.name === e.target.value);
+    selectedProjectId = match ? match.id : '';
+  });
 
   container.querySelector('#bkFrom').value = addDaysStr(todayStr(), -30);
   container.querySelector('#bkTo').value = todayStr();
@@ -341,10 +358,10 @@ export async function render(container, profile, isStale = () => false) {
   container.querySelector('#btnNewAdjustment').addEventListener('click', openNewAdjustmentModal);
 
   async function calc() {
-    const projectId = container.querySelector('#bkProject').value;
+    const projectId = selectedProjectId;
+    if (!projectId) { alert('Chọn đúng khách hàng và dự án từ danh sách gợi ý (gõ và bấm chọn, không tự gõ tên lạ).'); return; }
     const from = container.querySelector('#bkFrom').value;
     const to = container.querySelector('#bkTo').value;
-    if (!projectId) return;
 
     const output = container.querySelector('#bkOutput');
     output.innerHTML = '<div class="loading">Đang tính...</div>';
