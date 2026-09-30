@@ -19,6 +19,7 @@ const ROUTE_GROUPS = [
       { key: 'giaonhan', module: 'giaonhan', label: 'Giao nhận', icon: '⇄', quick: true },
       { key: 'bangke', module: 'bangke', label: 'Bảng kê', icon: '▦', quick: true },
       { key: 'haohut', module: 'haohut', label: 'Hao hụt', icon: '⚠' },
+      { key: 'kehoach', module: 'kehoach', label: 'Kế hoạch', icon: '◷' },
     ],
   },
   {
