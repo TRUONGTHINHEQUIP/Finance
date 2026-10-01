@@ -43,7 +43,7 @@ export async function render(container, profile, isStale = () => false) {
   const horizonEnd = buckets[buckets.length - 1].end;
 
   const [{ data: cats }, { data: groups }, { data: projects }, { data: summaryRows }, { data: arrivals }, { data: departures }, { data: forecastRows }, { data: needRows }] = await Promise.all([
-    supabase.from('categories').select('*').order('name'),
+    supabase.from('categories').select('*').order('group_id').order('sort_order'),
     supabase.from('groups').select('*').order('id'),
     supabase.from('projects').select('*, partners(name)').eq('status', 'active').order('name'),
     supabase.from('asset_summary').select('*'),
@@ -104,7 +104,7 @@ export async function render(container, profile, isStale = () => false) {
       const thieu = ends.some(v => v < 0);
       (byGroup[c.group_id] ??= []).push({ c, kho, deltas: byCategory[c.id].cols, ends, thieu });
     });
-    Object.values(byGroup).forEach(list => list.sort((a, b) => a.c.name.localeCompare(b.c.name)));
+    Object.values(byGroup).forEach(list => list.sort((a, b) => a.c.sort_order - b.c.sort_order));
 
     let bodyHtml = '';
     let thieuCount = 0;
@@ -188,7 +188,7 @@ export async function render(container, profile, isStale = () => false) {
     // vì dự án có thể cần thêm loại chưa từng cấp.
     const byGroup = {};
     catList.forEach(cat => { (byGroup[cat.group_id] ??= []).push(cat); });
-    Object.values(byGroup).forEach(list => list.sort((a, b) => a.name.localeCompare(b.name)));
+    Object.values(byGroup).forEach(list => list.sort((a, b) => a.sort_order - b.sort_order));
 
     function buildGrid() {
       let stt = 0;
