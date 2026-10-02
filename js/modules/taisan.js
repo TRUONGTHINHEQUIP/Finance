@@ -26,7 +26,7 @@ export async function render(container, profile, isStale = () => false) {
 
   const [{ data: groups }, { data: categories }, { data: partners }, { data: projects }, { data: summaryRows }, { data: arrivals }, { data: departures }] = await Promise.all([
     supabase.from('groups').select('*').order('id'),
-    supabase.from('categories').select('*').order('name'),
+    supabase.from('categories').select('*').order('group_id').order('sort_order'),
     supabase.from('partners').select('*').order('name'),
     supabase.from('projects').select('*').eq('status', 'active').order('name'),
     supabase.from('asset_summary').select('*'),
@@ -69,7 +69,7 @@ export async function render(container, profile, isStale = () => false) {
   function renderGroupTable() {
     let rowsHtml = '';
     groupList.forEach(g => {
-      const catsInGroup = catList.filter(c => c.group_id === g.id).sort((a, b) => a.name.localeCompare(b.name));
+      const catsInGroup = catList.filter(c => c.group_id === g.id).sort((a, b) => a.sort_order - b.sort_order);
       const groupTotalQty = catsInGroup.reduce((s, c) => s + totalOwned(c.id), 0);
       const groupTotalValue = catsInGroup.reduce((s, c) => s + totalOwned(c.id) * (c.ref_value ?? 0), 0);
       const isOpen = expandedGroups.has(g.id);
@@ -198,7 +198,7 @@ export async function render(container, profile, isStale = () => false) {
       // Gom theo NHÓM A-E — đúng cách trình bày 2 lớp đã thống nhất ở tab "Theo nhóm hàng"
       const byGroup = {};
       items.forEach(it => { (byGroup[it.cat.group_id] ??= []).push(it); });
-      Object.values(byGroup).forEach(list => list.sort((a, b) => b.value - a.value));
+      Object.values(byGroup).forEach(list => list.sort((a, b) => a.cat.sort_order - b.cat.sort_order));
 
       let rowsHtml = '';
       groupList.filter(g => byGroup[g.id]).forEach(g => {
