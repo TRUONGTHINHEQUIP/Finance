@@ -51,7 +51,7 @@ export async function render(container, profile, isStale = () => false) {
   `;
 
   const [{ data: c }, { data: p }, { data: g }, { data: cv }, { data: ci }, { data: pt }] = await Promise.all([
-    supabase.from('categories').select('*'),
+    supabase.from('categories').select('*').order('group_id').order('sort_order'),
     supabase.from('projects').select('*, partners(*)').eq('status', 'active').order('name'),
     supabase.from('groups').select('*').order('id'),
     supabase.from('company_vehicles').select('*, vehicle_types(name)'),
@@ -111,7 +111,7 @@ export async function render(container, profile, isStale = () => false) {
       const groupId = cat?.group_id ?? '?';
       (byGroup[groupId] ??= []).push(catId);
     });
-    Object.values(byGroup).forEach(catIds => catIds.sort((a, b) => (catName(a)).localeCompare(catName(b))));
+    Object.values(byGroup).forEach(catIds => catIds.sort((a, b) => (catById(a)?.sort_order ?? 999) - (catById(b)?.sort_order ?? 999)));
 
     let stt = 0;
     let html = '';
@@ -201,7 +201,7 @@ export async function render(container, profile, isStale = () => false) {
       const groupId = catById(catId)?.group_id ?? '?';
       (byGroupExport[groupId] ??= []).push(catId);
     });
-    Object.values(byGroupExport).forEach(ids => ids.sort((a, b) => catName(a).localeCompare(catName(b))));
+    Object.values(byGroupExport).forEach(ids => ids.sort((a, b) => (catById(a)?.sort_order ?? 999) - (catById(b)?.sort_order ?? 999)));
 
     const rows = [];
     const styledCells = []; // {ref, style}
