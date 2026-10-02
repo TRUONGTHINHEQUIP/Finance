@@ -28,7 +28,7 @@ export async function render(container, profile, isStale = () => false) {
 
   // Hỏi song song thay vì nối tiếp — giảm thời gian tải ban đầu
   const [{ data: c }, { data: p }] = await Promise.all([
-    supabase.from('categories').select('*').order('name'),
+    supabase.from('categories').select('*').order('group_id').order('sort_order'),
     supabase.from('projects').select('*').eq('status', 'active').order('name'),
   ]);
   if (isStale()) return;
