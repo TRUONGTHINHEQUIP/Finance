@@ -48,7 +48,7 @@ export async function render(container, profile, isStale = () => false) {
 
   // ================= NHÓM HÀNG (list chính) =================
   async function loadCategories() {
-    const { data, error } = await supabase.from('categories').select('*').order('name');
+    const { data, error } = await supabase.from('categories').select('*').order('group_id').order('sort_order');
     if (isStale()) return;
     if (error) { container.querySelector('#groupTable').innerHTML = `<tr><td class="error-box">${error.message}</td></tr>`; return; }
     categories = data ?? [];
@@ -85,7 +85,7 @@ export async function render(container, profile, isStale = () => false) {
     const dialog = openModal({ title: `${group.id} — ${group.name}`, bodyHtml, footerHtml: '', wide: true });
 
     function renderItems() {
-      const items = categories.filter(c => c.group_id === group.id).sort((a, b) => a.name.localeCompare(b.name));
+      const items = categories.filter(c => c.group_id === group.id).sort((a, b) => a.sort_order - b.sort_order);
       const rows = items.map(c => `<tr>
         <td>${esc(c.name)}</td><td>${esc(c.unit)}</td>
         <td class="num">${fmtVND(c.ref_value)}</td>
