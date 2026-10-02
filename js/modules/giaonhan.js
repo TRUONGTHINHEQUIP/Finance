@@ -17,7 +17,7 @@ export async function render(container, profile, isStale = () => false) {
   `;
 
   const [{ data: c }, { data: p }, { data: w }, { data: vt }, { data: tc }, { data: cv }] = await Promise.all([
-    supabase.from('categories').select('*').order('name'),
+    supabase.from('categories').select('*').order('group_id').order('sort_order'),
     supabase.from('projects').select('*').eq('status', 'active').order('name'),
     supabase.from('warehouses').select('*').order('name'),
     supabase.from('vehicle_types').select('*').order('name'),
