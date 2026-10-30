@@ -20,7 +20,7 @@ export async function render(container, profile, isStale = () => false) {
     if (error) { container.querySelector('#partnerList').innerHTML = `<div class="error-box">${error.message}</div>`; return; }
     const [{ data: proj }, { data: cats }] = await Promise.all([
       supabase.from('projects').select('*').order('name'),
-      supabase.from('categories').select('*').order('group_id').order('sort_order'),
+      supabase.from('categories').select('*').order('sort_order', { ascending: true, nullsFirst: false }).order('name'),
     ]);
     if (isStale()) return;
     partners = p ?? []; projects = proj ?? []; categories = cats ?? [];
@@ -88,8 +88,31 @@ export async function render(container, profile, isStale = () => false) {
     });
   }
 
-  function openDetailModal(partner) {
+  // Lấy toàn bộ giá của 1 đối tác trong 2 lần hỏi (giá khung + giá riêng mọi dự án)
+  async function loadRateData(partner, projs) {
+    const today = todayStr();
+    const ids = projs.map(p => p.id);
+    const [{ data: base }, { data: ovr }] = await Promise.all([
+      supabase.from('partner_rates').select('category_id, daily_rate, effective_from')
+        .eq('partner_id', partner.id).lte('effective_from', today).order('effective_from', { ascending: false }),
+      ids.length
+        ? supabase.from('project_rate_overrides').select('project_id, category_id, daily_rate, effective_from')
+            .in('project_id', ids).lte('effective_from', today).order('effective_from', { ascending: false })
+        : Promise.resolve({ data: [] }),
+    ]);
+    const baseMap = {}, ovrMap = {};
+    (base ?? []).forEach(r => { if (!(r.category_id in baseMap)) baseMap[r.category_id] = r.daily_rate; });
+    (ovr ?? []).forEach(r => {
+      ovrMap[r.project_id] ??= {};
+      if (!(r.category_id in ovrMap[r.project_id])) ovrMap[r.project_id][r.category_id] = r.daily_rate;
+    });
+    return { baseMap, ovrMap };
+  }
+
+  function openDetailModal(partner, openKey = null) {
     const projs = projects.filter(pr => pr.partner_id === partner.id);
+    const catsSorted = [...categories].sort((a, b) =>
+      (a.group_id ?? '').localeCompare(b.group_id ?? '') || (a.sort_order ?? 9999) - (b.sort_order ?? 9999) || a.name.localeCompare(b.name));
 
     const bodyHtml = `
       <div style="font-size:.85rem; color:var(--ink-soft); line-height:1.8; margin-bottom:16px;">
@@ -98,46 +121,87 @@ export async function render(container, profile, isStale = () => false) {
         Hợp đồng: ${esc(partner.hop_dong_so ?? '—')} ${partner.hop_dong_ngay ? '— ký ngày ' + fmtDate(partner.hop_dong_ngay) : ''}<br>
         Kỳ chốt bill: ngày ${partner.billing_cutoff_day} hằng tháng
       </div>
-      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-        <b>Dự án &amp; bảng giá</b>
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:8px;">
+        <b>Dự án &amp; bảng giá <span style="font-weight:400; color:var(--ink-soft); font-size:.8rem;">(bấm vào dòng để xem giá)</span></b>
         <div style="display:flex; gap:8px;">
           <button class="btn secondary small" id="dNewProject">+ Tạo dự án mới</button>
           <button class="btn small" id="dNewRate">+ Tạo báo giá mặc định</button>
         </div>
       </div>
-      <div class="chips" style="margin-bottom:8px;">
-        <span class="badge tam" style="cursor:pointer;" data-price="default">📋 Bảng giá mặc định</span>
-        ${projs.map(pr => `<span class="badge tam" style="cursor:pointer; margin-left:6px;" data-price="${pr.id}">${esc(pr.name)}</span>`).join('')}
-      </div>
-      <div id="priceArea"></div>
+      <div class="panel"><div class="panel-body" style="padding:0">
+        <table id="projTable"><tbody><tr><td class="loading" colspan="4">Đang tải...</td></tr></tbody></table>
+      </div></div>
     `;
 
     const dialog = openModal({ title: partner.name, bodyHtml, footerHtml: '', wide: true });
-
-    dialog.querySelectorAll('[data-price]').forEach(chip => {
-      chip.addEventListener('click', async () => {
-        const key = chip.dataset.price;
-        const area = dialog.querySelector('#priceArea');
-        area.innerHTML = '<div class="loading">Đang tải bảng giá...</div>';
-
-        const project = key === 'default' ? null : projs.find(x => x.id === key);
-        const rows = await getRateTable(partner, project);
-
-        area.innerHTML = `<table style="margin-top:10px;">
-          <thead><tr><th>Chủng loại</th><th>ĐVT</th><th class="num">Đơn giá/ngày</th></tr></thead>
-          <tbody>${rows.map(r => `<tr><td>${esc(r.name)}</td><td>${esc(r.unit)}</td>
-            <td class="num" style="${r.isOverride ? 'color:var(--red-dark);font-weight:600;' : ''}">${r.rate != null ? fmtVND(r.rate) + (r.isOverride ? ' *' : '') : '— chưa có giá —'}</td></tr>`).join('')}</tbody>
-        </table>
-        ${rows.some(r => r.isOverride) ? '<div class="note-box" style="margin-top:8px;">* Đơn giá riêng cho dự án này, khác giá khung mặc định.</div>' : ''}
-        ${project ? `<button class="btn secondary small" id="dNewProjectRate" style="margin-top:10px;">+ Đặt giá riêng cho dự án này</button>` : ''}`;
-
-        const projectRateBtn = area.querySelector('#dNewProjectRate');
-        if (projectRateBtn) projectRateBtn.addEventListener('click', () => openRateModal(partner, project));
-      });
-    });
-
     dialog.querySelector('#dNewRate').addEventListener('click', () => openRateModal(partner));
     dialog.querySelector('#dNewProject').addEventListener('click', () => openNewProjectModal(partner));
+
+    loadRateData(partner, projs).then(({ baseMap, ovrMap }) => {
+      const items = [
+        { key: 'default', label: 'Bảng giá mặc định', sub: 'Giá khung áp dụng cho mọi dự án', project: null, ovr: {} },
+        ...projs.map(pr => ({ key: pr.id, label: pr.name, sub: pr.code ?? '', project: pr, ovr: ovrMap[pr.id] ?? {} })),
+      ];
+      const baseCount = Object.keys(baseMap).length;
+
+      const rowsHtml = items.map((it, i) => {
+        const nOvr = Object.keys(it.ovr).length;
+        const nPriced = it.project ? new Set([...Object.keys(baseMap), ...Object.keys(it.ovr)]).size : baseCount;
+        return `<tr class="proj-row" data-key="${it.key}" style="cursor:pointer;">
+          <td style="width:42px; color:var(--ink-soft);">${i === 0 ? '📋' : i}</td>
+          <td><b style="color:var(--red-dark);">${esc(it.label)}</b>${it.sub ? `<div style="font-size:.74rem; color:var(--ink-soft);">${esc(it.sub)}</div>` : ''}</td>
+          <td class="num">${nPriced}/${categories.length} chủng loại có giá${nOvr ? ` · <span style="color:var(--red-dark); font-weight:600;">${nOvr} giá riêng</span>` : ''}</td>
+          <td style="width:30px; text-align:center; color:var(--ink-soft);" class="chev">▸</td>
+        </tr>
+        <tr class="price-row" data-for="${it.key}" style="display:none;"><td colspan="4" style="padding:0; background:#FCFBF9;"></td></tr>`;
+      }).join('');
+
+      const table = dialog.querySelector('#projTable');
+      table.innerHTML = `<thead><tr><th>#</th><th>Dự án</th><th class="num">Tình trạng giá</th><th></th></tr></thead><tbody>${rowsHtml}</tbody>`;
+
+      function buildPriceHtml(it) {
+        let lastGroup = null;
+        const rows = catsSorted.map(c => {
+          const isOvr = c.id in it.ovr;
+          const rate = isOvr ? it.ovr[c.id] : (baseMap[c.id] ?? null);
+          let head = '';
+          if (c.group_id !== lastGroup) {
+            lastGroup = c.group_id;
+            head = `<tr><td colspan="3" style="background:var(--gray-tint); font-weight:600; font-size:.76rem; color:var(--ink-soft);">NHÓM ${esc(c.group_id ?? '')}</td></tr>`;
+          }
+          return head + `<tr><td>${esc(c.name)}</td><td>${esc(c.unit)}</td>
+            <td class="num" style="${isOvr ? 'color:var(--red-dark); font-weight:600;' : ''}">${rate != null ? fmtVND(rate) + (isOvr ? ' *' : '') : '<span style="color:var(--ink-soft);">— chưa có giá —</span>'}</td></tr>`;
+        }).join('');
+        return `<div style="padding:10px 14px 14px;">
+          <div style="max-height:340px; overflow-y:auto; border:1px solid var(--line); border-radius:6px; background:#fff;">
+            <table><thead><tr><th>Chủng loại</th><th>ĐVT</th><th class="num">Đơn giá/ngày</th></tr></thead><tbody>${rows}</tbody></table>
+          </div>
+          ${Object.keys(it.ovr).length ? '<div class="note-box" style="margin:8px 0 0;">* Đơn giá riêng cho dự án này, khác giá khung mặc định.</div>' : ''}
+          ${it.project ? `<button class="btn secondary small" data-set-rate="${it.key}" style="margin-top:10px;">+ Đặt giá riêng cho dự án này</button>` : ''}
+        </div>`;
+      }
+
+      function toggle(key) {
+        const it = items.find(x => x.key === key);
+        const priceRow = table.querySelector(`.price-row[data-for="${key}"]`);
+        const headRow = table.querySelector(`.proj-row[data-key="${key}"]`);
+        const willOpen = priceRow.style.display === 'none';
+        // chỉ mở 1 dự án một lúc cho gọn
+        table.querySelectorAll('.price-row').forEach(r => r.style.display = 'none');
+        table.querySelectorAll('.proj-row').forEach(r => { r.style.background = ''; r.querySelector('.chev').textContent = '▸'; });
+        if (!willOpen) return;
+        priceRow.style.display = '';
+        headRow.style.background = 'var(--red-tint)';
+        headRow.querySelector('.chev').textContent = '▾';
+        priceRow.firstElementChild.innerHTML = buildPriceHtml(it);
+        const btn = priceRow.querySelector('[data-set-rate]');
+        if (btn) btn.addEventListener('click', () => openRateModal(partner, it.project));
+        headRow.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      }
+
+      table.querySelectorAll('.proj-row').forEach(tr => tr.addEventListener('click', () => toggle(tr.dataset.key)));
+      if (openKey) toggle(openKey);
+    });
   }
 
   function openNewProjectModal(partner) {
@@ -210,6 +274,7 @@ export async function render(container, profile, isStale = () => false) {
       if (error) { alert('Lỗi lưu báo giá: ' + error.message); return; }
       closeModal();
       alert(`Đã lưu ${rows.length} dòng đơn giá.`);
+      openDetailModal(partner, isProjectRate ? project.id : 'default');
     });
   }
 
