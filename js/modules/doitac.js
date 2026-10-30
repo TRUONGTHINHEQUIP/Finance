@@ -230,13 +230,23 @@ export async function render(container, profile, isStale = () => false) {
     });
   }
 
-  function openRateModal(partner, project = null) {
+  async function openRateModal(partner, project = null) {
     const isProjectRate = !!project;
+    const projsOfPartner = projects.filter(pr => pr.partner_id === partner.id);
+    // Giá nền hiện hành: giá khung của đối tác, nếu là dự án thì đè thêm giá riêng đã có
+    const { baseMap, ovrMap } = await loadRateData(partner, projsOfPartner);
+    const current = {};
+    categories.forEach(c => {
+      const o = isProjectRate ? ovrMap[project.id]?.[c.id] : undefined;
+      current[c.id] = o ?? baseMap[c.id] ?? null;
+    });
+    const catsSorted = [...categories].sort((a, b) =>
+      (a.group_id ?? '').localeCompare(b.group_id ?? '') || (a.sort_order ?? 9999) - (b.sort_order ?? 9999) || a.name.localeCompare(b.name));
+
     const bodyHtml = `
       <div class="info-box">${isProjectRate
-        ? `Đơn giá riêng chỉ áp dụng cho dự án <b>${esc(project.name)}</b>, ghi đè giá khung mặc định của <b>${esc(partner.name)}</b>.`
-        : `Bảng giá mặc định (giá khung) áp dụng cho toàn bộ dự án của <b>${esc(partner.name)}</b>, trừ khi dự án có đơn giá riêng ghi đè.`}
-        Chỉ điền chủng loại nào cần đặt/đổi giá, để trống các dòng còn lại.</div>
+        ? `Các ô đã điền sẵn <b>giá khung mặc định</b> của <b>${esc(partner.name)}</b> làm nền. Chỉ <b>sửa ô nào cần giá riêng</b> cho dự án <b>${esc(project.name)}</b>; ô để nguyên sẽ tiếp tục dùng giá khung.`
+        : `Các ô đã điền sẵn giá mặc định hiện hành. Chỉ sửa ô nào cần đổi giá; ô để nguyên sẽ giữ nguyên. Áp dụng cho toàn bộ dự án của <b>${esc(partner.name)}</b>, trừ dự án có giá riêng.`}</div>
       <div class="field-row">
         <div class="field"><label>Ngày hiệu lực</label><input type="date" id="rDate" value="${todayStr()}"></div>
         ${isProjectRate ? `<div class="field"><label>Lý do đổi giá riêng</label><input type="text" id="rReason" placeholder="VD: Thương lượng riêng theo hợp đồng dự án"></div>` : ''}
@@ -244,36 +254,47 @@ export async function render(container, profile, isStale = () => false) {
       <div style="max-height:320px; overflow-y:auto; border:1px solid var(--line); border-radius:6px;">
         <table>
           <thead><tr><th>Chủng loại</th><th>ĐVT</th><th class="num" style="width:140px;">Đơn giá/ngày</th></tr></thead>
-          <tbody>${categories.map(c => `<tr><td>${esc(c.name)}</td><td>${esc(c.unit)}</td>
-            <td><input type="number" data-rate-cat="${c.id}" placeholder="—" style="width:120px;"></td></tr>`).join('')}</tbody>
+          <tbody>${catsSorted.map(c => `<tr><td>${esc(c.name)}</td><td>${esc(c.unit)}</td>
+            <td><input type="number" data-rate-cat="${c.id}" data-orig="${current[c.id] ?? ''}" value="${current[c.id] ?? ''}" placeholder="—" style="width:120px;"></td></tr>`).join('')}</tbody>
         </table>
       </div>
+      <div id="rChanged" style="font-size:.78rem; color:var(--ink-soft); margin-top:8px;">Chưa thay đổi ô nào.</div>
     `;
     const footerHtml = `<button class="btn secondary" id="rCancel">Hủy</button><button class="btn" id="rSubmit">Lưu báo giá</button>`;
     const dialog = openModal({ title: isProjectRate ? `Đặt giá riêng — ${project.name}` : `Tạo báo giá mặc định — ${partner.name}`, bodyHtml, footerHtml, wide: true });
+
+    const isChanged = (inp) => {
+      const v = parseFloat(inp.value);
+      const o = inp.dataset.orig === '' ? NaN : parseFloat(inp.dataset.orig);
+      return !isNaN(v) && v > 0 && v !== o;
+    };
+    dialog.querySelectorAll('[data-rate-cat]').forEach(inp => inp.addEventListener('input', () => {
+      const changed = dialog.querySelectorAll('[data-rate-cat]');
+      let n = 0;
+      changed.forEach(i => { const c = isChanged(i); i.style.borderColor = c ? 'var(--red)' : ''; i.style.fontWeight = c ? '600' : ''; if (c) n++; });
+      dialog.querySelector('#rChanged').innerHTML = n ? `Đã thay đổi <b style="color:var(--red-dark);">${n}</b> chủng loại (ô viền đỏ).` : 'Chưa thay đổi ô nào.';
+    }));
 
     dialog.querySelector('#rCancel').addEventListener('click', closeModal);
     dialog.querySelector('#rSubmit').addEventListener('click', async () => {
       const effective_from = dialog.querySelector('#rDate').value;
       const reason = isProjectRate ? (dialog.querySelector('#rReason').value.trim() || 'Đơn giá riêng thiết lập qua giao diện') : 'Báo giá thiết lập qua giao diện';
-      const inputs = dialog.querySelectorAll('[data-rate-cat]');
       const rows = [];
-      inputs.forEach(inp => {
+      dialog.querySelectorAll('[data-rate-cat]').forEach(inp => {
+        if (!isChanged(inp)) return; // ô giữ nguyên -> không lưu, tiếp tục dùng giá nền
         const val = parseFloat(inp.value);
-        if (!isNaN(val) && val > 0) {
-          rows.push(isProjectRate
-            ? { project_id: project.id, category_id: inp.dataset.rateCat, daily_rate: val, effective_from, reason, approved_by: profile.id }
-            : { partner_id: partner.id, category_id: inp.dataset.rateCat, daily_rate: val, effective_from, reason });
-        }
+        rows.push(isProjectRate
+          ? { project_id: project.id, category_id: inp.dataset.rateCat, daily_rate: val, effective_from, reason, approved_by: profile.id }
+          : { partner_id: partner.id, category_id: inp.dataset.rateCat, daily_rate: val, effective_from, reason });
       });
-      if (rows.length === 0) { alert('Nhập ít nhất 1 đơn giá.'); return; }
+      if (rows.length === 0) { alert('Chưa có ô nào thay đổi so với giá nền.'); return; }
 
       const { error } = isProjectRate
         ? await supabase.from('project_rate_overrides').upsert(rows, { onConflict: 'project_id,category_id,effective_from' })
         : await supabase.from('partner_rates').upsert(rows, { onConflict: 'partner_id,category_id,effective_from' });
       if (error) { alert('Lỗi lưu báo giá: ' + error.message); return; }
       closeModal();
-      alert(`Đã lưu ${rows.length} dòng đơn giá.`);
+      alert(`Đã lưu ${rows.length} dòng đơn giá thay đổi.`);
       openDetailModal(partner, isProjectRate ? project.id : 'default');
     });
   }
